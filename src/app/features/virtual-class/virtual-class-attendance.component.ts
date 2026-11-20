@@ -170,7 +170,7 @@ type Filter = 'ALL' | 'PRESENT' | 'ABSENT' | 'LATE' | 'EARLY';
                   <tr class="va-row" tabindex="0" (click)="toggle(p.email)" (keydown.enter)="toggle(p.email)" [attr.aria-expanded]="expanded === p.email">
                     <td>
                       <div class="fw-semibold">{{ p.name || p.email }}</div>
-                      <div class="small text-muted">{{ p.email }}<span *ngIf="!p.enrolled" class="va-flag">hors liste</span></div>
+                      <div class="small text-muted">{{ isLinkGuest(p.email) ? 'Invité (lien partagé)' : p.email }}<span *ngIf="!p.enrolled && !isLinkGuest(p.email)" class="va-flag">hors liste</span></div>
                     </td>
                     <td class="text-nowrap">
                       <span class="status-badge" [class.status-published]="p.status === 'PRESENT'" [class.status-draft]="p.status === 'ABSENT'">
@@ -333,6 +333,9 @@ export class VirtualClassAttendanceComponent implements OnInit, OnDestroy {
   }
 
   toggle(email: string) { this.expanded = this.expanded === email ? null : email; }
+
+  /** Participant entré par le lien partagé (adresse attribuée par le serveur, sans email réel). */
+  isLinkGuest(email: string): boolean { return email.endsWith('@lien.invite'); }
 
   downloadExcel() {
     this.downloading = true;

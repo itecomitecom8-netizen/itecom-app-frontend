@@ -12,9 +12,9 @@ import { ScrollService } from './core/services/scroll.service';
 import { BottomNavComponent } from './shared/components/bottom-nav.component';
 import { InstallBannerComponent } from './shared/components/install-banner.component';
 
-/** Pages affichées sans menu, même connecté : connexion et vérification publique d'un document. */
+/** Pages affichées sans menu, même connecté : connexion, vérification publique d'un document, invitation à une classe. */
 function isStandalonePage(url: string): boolean {
-  return url.startsWith('/auth') || url.startsWith('/verification');
+  return url.startsWith('/auth') || url.startsWith('/verification') || url.startsWith('/classe/');
 }
 
 @Component({

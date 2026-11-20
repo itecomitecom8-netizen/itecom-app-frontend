@@ -5,8 +5,10 @@ import { pickVideoUrl } from '../../core/utils/video-quality';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { DialogService } from '../../core/services/dialog.service';
 import { AuthService } from '../../core/services/auth.service';
-import { StudentPickerComponent, PickedStudent, studentsCsv } from '../../shared/components/student-picker.component';
+import { StudentPickerComponent, PickedStudent, studentsCsv, toPickedStudent } from '../../shared/components/student-picker.component';
 
 interface VirtualClass {
   id: number;
@@ -23,7 +25,13 @@ interface VirtualClass {
   courseTitle: string | null;
   thumbnailData: string | null;
   hasRecording: boolean;
+  guestCount?: number;
+  sharedLinkActive?: boolean;
 }
+
+interface GuestInvite { id: number; name: string; email: string; link: string; active: boolean; emailSentAt: string | null; }
+interface InvitesState { sharedLink: string | null; sharedLinkActive: boolean; guests: GuestInvite[]; }
+interface InviteFailure { email: string; name: string; reason: string; }
 
 @Component({
   selector: 'app-virtual-class',
@@ -179,6 +187,12 @@ interface VirtualClass {
                   <i class="bi bi-archive me-2"></i>Session terminée (sans enregistrement)
                 </button>
               </div>
+              <button *ngIf="canSeeAttendance(vc) && vc.status !== 'COMPLETED' && vc.status !== 'CANCELLED'"
+                      class="btn btn-outline-secondary w-100 mt-2" (click)="openInvites(vc)">
+                <i class="bi bi-link-45deg me-2"></i>Inviter sans compte
+                <span *ngIf="vc.guestCount" class="badge bg-secondary ms-1">{{ vc.guestCount }}</span>
+                <span *ngIf="vc.sharedLinkActive" class="badge bg-success ms-1" title="Lien partagé actif"><i class="bi bi-link"></i></span>
+              </button>
               <a *ngIf="canSeeAttendance(vc) && (vc.status !== 'SCHEDULED' || isOverdue(vc))"
                  [routerLink]="['/virtual-class', vc.id, 'attendance']"
                  class="btn btn-outline-primary w-100 mt-2">
@@ -233,7 +247,14 @@ interface VirtualClass {
               </div>
               <div class="mb-3">
                 <label class="form-label fw-semibold">Étudiants *</label>
-                <app-student-picker [students]="newStudents" [targetLevels]="newLevels"></app-student-picker>
+                <app-student-picker [students]="newStudents" [targetLevels]="newLevels" [allowGuests]="true"></app-student-picker>
+                <div class="form-check mt-3">
+                  <input class="form-check-input" type="checkbox" id="vc-share-link" [(ngModel)]="newShareLink">
+                  <label class="form-check-label" for="vc-share-link">
+                    <strong>Créer un lien d'invitation à partager</strong>
+                    <span class="d-block small text-muted">Toute personne qui a le lien entre en tapant son nom, sans compte (à envoyer par WhatsApp, email…).</span>
+                  </label>
+                </div>
                 <div *ngIf="createError" class="alert alert-danger py-2 mt-2 mb-0 small">{{ createError }}</div>
               </div>
               <div class="alert alert-info small mb-0">
@@ -247,6 +268,100 @@ interface VirtualClass {
               <button class="btn btn-primary-custom" (click)="createClass()">
                 <i class="bi bi-check-circle me-2"></i>Créer la session
               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Invitations sans compte -->
+      <div class="modal fade show d-block" *ngIf="invitesFor" style="background:rgba(0,0,0,.5);overflow-y:auto" role="dialog" aria-modal="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+          <div class="modal-content border-0 rounded-4">
+            <div class="modal-header border-0 p-4 pb-2">
+              <div>
+                <h5 class="modal-title fw-bold"><i class="bi bi-link-45deg me-1"></i>Inviter sans compte</h5>
+                <div class="small text-muted">{{ invitesFor.title }}</div>
+              </div>
+              <button class="btn-close" aria-label="Fermer" (click)="closeInvites()"></button>
+            </div>
+            <div class="modal-body p-4 pt-2">
+              <div *ngIf="!invites" class="text-center py-4"><div class="spinner-border text-primary"></div></div>
+              <div *ngIf="invitesError" class="alert alert-danger py-2 small">{{ invitesError }}</div>
+              <div *ngIf="invitesNotice" class="alert alert-info py-2 small" style="white-space:pre-line">{{ invitesNotice }}</div>
+
+              <ng-container *ngIf="invites">
+                <!-- Lien partagé -->
+                <h6 class="fw-bold mt-1"><i class="bi bi-share me-2 text-primary"></i>Lien à partager</h6>
+                <p class="small text-muted mb-2">Toute personne qui a ce lien entre dans la séance en tapant son nom, sans compte.
+                  Elle apparaît dans les présences comme « invité ».</p>
+                <ng-container *ngIf="invites.sharedLink && invites.sharedLinkActive; else noLink">
+                  <div class="input-group mb-2">
+                    <input class="form-control" [value]="invites.sharedLink" readonly aria-label="Lien d'invitation partagé" (focus)="$any($event.target).select()">
+                    <button class="btn btn-primary" (click)="copy(invites.sharedLink!)"><i class="bi bi-clipboard me-1"></i>Copier</button>
+                  </div>
+                  <div class="d-flex flex-wrap gap-2 mb-4">
+                    <a class="btn btn-sm btn-success" target="_blank" rel="noopener" [href]="whatsappUrl(invites.sharedLink!)">
+                      <i class="bi bi-whatsapp me-1"></i>Envoyer par WhatsApp</a>
+                    <button class="btn btn-sm btn-outline-secondary" [disabled]="invitesBusy" (click)="regenerateLink()">
+                      <i class="bi bi-arrow-repeat me-1"></i>Nouveau lien</button>
+                    <button class="btn btn-sm btn-outline-danger" [disabled]="invitesBusy" (click)="disableLink()">
+                      <i class="bi bi-slash-circle me-1"></i>Désactiver</button>
+                  </div>
+                </ng-container>
+                <ng-template #noLink>
+                  <button class="btn btn-outline-primary mb-4" [disabled]="invitesBusy" (click)="enableLink()">
+                    <i class="bi bi-link me-1"></i>{{ invites.sharedLink ? 'Réactiver le lien' : 'Créer le lien' }}</button>
+                </ng-template>
+
+                <!-- Invitations personnelles -->
+                <h6 class="fw-bold border-top pt-3"><i class="bi bi-envelope me-2 text-primary"></i>Invitations personnelles par email</h6>
+                <p class="small text-muted mb-2">Chaque personne reçoit son propre lien : on sait qui est entré, et ses présences et appels sont suivis à son nom.</p>
+                <form class="row g-2 align-items-end mb-2" (ngSubmit)="addGuest()">
+                  <div class="col-sm-5">
+                    <label class="form-label small mb-1" for="guest-name">Nom</label>
+                    <input id="guest-name" name="guestName" class="form-control form-control-sm" [(ngModel)]="guestName" placeholder="Prénom Nom">
+                  </div>
+                  <div class="col-sm-5">
+                    <label class="form-label small mb-1" for="guest-email">Email</label>
+                    <input id="guest-email" name="guestEmail" type="email" class="form-control form-control-sm" [(ngModel)]="guestEmail" placeholder="nom@exemple.com">
+                  </div>
+                  <div class="col-sm-2 d-grid">
+                    <button type="submit" class="btn btn-sm btn-primary" [disabled]="invitesBusy || !guestEmail.trim()">Inviter</button>
+                  </div>
+                </form>
+                <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                  <button class="btn btn-sm btn-outline-primary" [disabled]="invitesBusy" (click)="guestFile.click()">
+                    <span *ngIf="invitesBusy" class="spinner-border spinner-border-sm me-1"></span>
+                    <i *ngIf="!invitesBusy" class="bi bi-upload me-1"></i>Importer une liste</button>
+                  <span class="small text-muted">Excel, CSV, Word ou PDF avec les colonnes Nom et Email.</span>
+                  <input #guestFile type="file" accept=".xlsx,.xls,.csv,.pdf,.docx,.doc" style="display:none" (change)="importGuests($event)">
+                </div>
+
+                <div *ngIf="!invites.guests.length" class="small text-muted">Aucune invitation personnelle pour le moment.</div>
+                <div *ngIf="invites.guests.length" class="table-responsive" style="max-height:300px">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light sticky-top"><tr><th>Nom</th><th>Email</th><th>Envoi</th><th class="text-end">Actions</th></tr></thead>
+                    <tbody>
+                      <tr *ngFor="let g of invites.guests">
+                        <td class="small">{{ g.name }}</td>
+                        <td class="small text-muted">{{ g.email }}</td>
+                        <td class="small">
+                          <span *ngIf="g.emailSentAt" class="text-success"><i class="bi bi-check2 me-1"></i>{{ g.emailSentAt | date:'dd/MM HH:mm' }}</span>
+                          <span *ngIf="!g.emailSentAt" class="text-danger"><i class="bi bi-exclamation-circle me-1"></i>non envoyé</span>
+                        </td>
+                        <td class="text-end text-nowrap">
+                          <button class="btn btn-sm btn-link p-1" title="Copier son lien" [attr.aria-label]="'Copier le lien de ' + g.name" (click)="copy(g.link)"><i class="bi bi-clipboard"></i></button>
+                          <button class="btn btn-sm btn-link p-1" title="Renvoyer l'email" [attr.aria-label]="'Renvoyer l’email à ' + g.name" [disabled]="invitesBusy" (click)="resendGuest(g)"><i class="bi bi-envelope-arrow-up"></i></button>
+                          <button class="btn btn-sm btn-link p-1 text-danger" title="Retirer" [attr.aria-label]="'Retirer ' + g.name" [disabled]="invitesBusy" (click)="removeGuest(g)"><i class="bi bi-x-circle"></i></button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </ng-container>
+            </div>
+            <div class="modal-footer border-0 p-4 pt-0">
+              <button class="btn btn-outline-secondary" (click)="closeInvites()">Fermer</button>
             </div>
           </div>
         </div>
@@ -292,7 +407,17 @@ export class VirtualClassComponent implements OnInit {
   newClass: any = { title: '', description: '', scheduledAt: '', durationMinutes: 60 };
   newStudents: PickedStudent[] = [];
   newLevels = new Set<string>();
+  newShareLink = false;
   createError = '';
+
+  // Invitations sans compte (lien partagé, invitations personnelles)
+  invitesFor: VirtualClass | null = null;
+  invites: InvitesState | null = null;
+  invitesBusy = false;
+  invitesError = '';
+  invitesNotice = '';
+  guestName = '';
+  guestEmail = '';
 
   // Inline player state
   playingVcId: number | null = null;
@@ -324,7 +449,8 @@ export class VirtualClassComponent implements OnInit {
   /** Séance ouverte depuis le tableau de bord (?session=id), mise en évidence */
   highlightId: number | null = null;
 
-  constructor(private http: HttpClient, private router: Router, private route: ActivatedRoute, public authService: AuthService) {}
+  constructor(private http: HttpClient, private router: Router, private route: ActivatedRoute, public authService: AuthService,
+              private dialogs: DialogService) {}
 
   ngOnInit() {
     const params = this.route.snapshot.queryParamMap;
@@ -476,14 +602,15 @@ export class VirtualClassComponent implements OnInit {
   }
 
   createClass() {
-    if (!this.newStudents.length && !this.newLevels.size) {
-      this.createError = 'Choisissez au moins un niveau ou un étudiant.';
+    if (!this.newStudents.length && !this.newLevels.size && !this.newShareLink) {
+      this.createError = 'Choisissez au moins un niveau, un étudiant ou un lien d\'invitation.';
       return;
     }
     const formData = new FormData();
     const data = { ...this.newClass, targetLevels: [...this.newLevels].join(',') };
     formData.append('class', new Blob([JSON.stringify(data)], { type: 'application/json' }));
     if (this.newStudents.length) formData.append('studentList', studentsCsv(this.newStudents));
+    if (this.newShareLink) formData.append('shareLink', 'true');
     this.http.post<VirtualClass>('/api/teacher/virtual-classes', formData).subscribe({
       next: (vc) => {
         this.classes.unshift(vc);
@@ -492,8 +619,137 @@ export class VirtualClassComponent implements OnInit {
         this.newStudents = [];
         this.newLevels = new Set();
         this.createError = '';
+        // Invités sans compte : le professeur retrouve aussitôt le lien à partager et les envois
+        if (this.newShareLink || vc.guestCount) this.openInvites(vc);
+        this.newShareLink = false;
       },
       error: (e) => { this.createError = e.error?.message || 'Impossible de créer la session. Vérifiez les informations et la liste des étudiants.'; }
     });
+  }
+
+  // --- Invitations sans compte ---
+
+  openInvites(vc: VirtualClass) {
+    this.invitesFor = vc;
+    this.invites = null;
+    this.invitesError = '';
+    this.invitesNotice = '';
+    this.http.get<InvitesState>(`/api/teacher/virtual-classes/${vc.id}/invites`).subscribe({
+      next: st => this.setInvites(st),
+      error: e => this.invitesError = e.error?.message || 'Impossible de charger les invitations.'
+    });
+  }
+
+  closeInvites() { this.invitesFor = null; this.invites = null; }
+
+  private setInvites(st: InvitesState) {
+    this.invites = st;
+    if (this.invitesFor) {
+      this.invitesFor.guestCount = st.guests.length;
+      this.invitesFor.sharedLinkActive = !!st.sharedLink && st.sharedLinkActive;
+    }
+  }
+
+  private invitesCall(request: Observable<any>, done?: () => void) {
+    this.invitesBusy = true;
+    this.invitesError = '';
+    request.subscribe({
+      next: (st: any) => { this.invitesBusy = false; this.setInvites(st); done?.(); },
+      error: e => { this.invitesBusy = false; this.invitesError = e.error?.message || 'Action impossible. Réessayez.'; }
+    });
+  }
+
+  enableLink() {
+    this.invitesCall(this.http.post(`/api/teacher/virtual-classes/${this.invitesFor!.id}/invites/link`, {}));
+  }
+
+  async regenerateLink() {
+    const ok = await this.dialogs.confirm({ title: 'Créer un nouveau lien ?', tone: 'warning', confirmText: 'Nouveau lien',
+      message: 'L\'ancien lien n\'ouvrira plus la séance. Il faudra partager le nouveau.' });
+    if (!ok) return;
+    this.invitesCall(this.http.post(`/api/teacher/virtual-classes/${this.invitesFor!.id}/invites/link`, {}, { params: { regenerate: 'true' } }),
+      () => this.dialogs.toast('Nouveau lien créé.'));
+  }
+
+  async disableLink() {
+    const ok = await this.dialogs.confirm({ title: 'Désactiver le lien ?', tone: 'danger', confirmText: 'Désactiver',
+      message: 'Plus personne ne pourra entrer avec ce lien. Les invitations personnelles restent valables.' });
+    if (!ok) return;
+    this.invitesCall(this.http.delete(`/api/teacher/virtual-classes/${this.invitesFor!.id}/invites/link`));
+  }
+
+  addGuest() {
+    if (!this.guestEmail.trim()) return;
+    this.sendGuests([{ name: this.guestName.trim(), email: this.guestEmail.trim() }], () => { this.guestName = ''; this.guestEmail = ''; });
+  }
+
+  /** Liste importée (même lecture que pour les étudiants), puis invitations envoyées. */
+  importGuests(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    this.invitesBusy = true;
+    this.invitesError = '';
+    this.invitesNotice = '';
+    const fd = new FormData();
+    fd.append('file', file);
+    this.http.post<any>('/api/teacher/qcms/parse-students', fd).subscribe({
+      next: res => {
+        this.invitesBusy = false;
+        const people = (res.students || []).map((x: any) => toPickedStudent(x))
+          .filter((p: PickedStudent) => p.email.trim())
+          .map((p: PickedStudent) => ({ name: `${p.firstName} ${p.lastName}`.trim() || p.name, email: p.email.trim() }));
+        if (!people.length) { this.invitesError = 'Aucune personne avec un email trouvée dans ce fichier.'; return; }
+        this.sendGuests(people);
+      },
+      error: err => {
+        this.invitesBusy = false;
+        this.invitesError = err.error?.error || err.error?.message || 'Erreur lors de la lecture du fichier.';
+      }
+    });
+  }
+
+  private sendGuests(guests: { name: string; email: string }[], done?: () => void) {
+    this.invitesBusy = true;
+    this.invitesError = '';
+    this.invitesNotice = '';
+    this.http.post<{ invites: InvitesState; added: number; skipped: InviteFailure[]; emailFailed: InviteFailure[] }>(
+      `/api/teacher/virtual-classes/${this.invitesFor!.id}/invites/guests`, { guests }).subscribe({
+      next: r => {
+        this.invitesBusy = false;
+        this.setInvites(r.invites);
+        const lines = [`${r.added} invitation(s) créée(s).`];
+        if (r.emailFailed.length) lines.push(`Email non envoyé à ${r.emailFailed.length} personne(s) : ${r.emailFailed[0].reason}. Copiez leur lien ou renvoyez l'email.`);
+        if (r.skipped.length) lines.push(`Écartées : ${r.skipped.map(f => `${f.email || f.name} (${f.reason})`).join(' ; ')}`);
+        this.invitesNotice = lines.join('\n');
+        if (r.added && !r.emailFailed.length) this.dialogs.toast(`${r.added} invitation(s) envoyée(s) par email.`);
+        done?.();
+      },
+      error: e => { this.invitesBusy = false; this.invitesError = e.error?.message || 'Invitations non créées. Réessayez.'; }
+    });
+  }
+
+  resendGuest(g: GuestInvite) {
+    this.invitesCall(this.http.post(`/api/teacher/virtual-classes/${this.invitesFor!.id}/invites/guests/${g.id}/resend`, {}),
+      () => this.dialogs.toast(`Email renvoyé à ${g.email}.`));
+  }
+
+  async removeGuest(g: GuestInvite) {
+    const ok = await this.dialogs.confirm({ title: `Retirer ${g.name} ?`, tone: 'danger', confirmText: 'Retirer',
+      message: 'Son lien personnel n\'ouvrira plus la séance.' });
+    if (!ok) return;
+    this.invitesCall(this.http.delete(`/api/teacher/virtual-classes/${this.invitesFor!.id}/invites/guests/${g.id}`));
+  }
+
+  copy(text: string) {
+    navigator.clipboard?.writeText(text).then(
+      () => this.dialogs.toast('Lien copié.'),
+      () => this.dialogs.toast('Copie impossible : sélectionnez le lien et copiez-le.', 'warning'));
+  }
+
+  whatsappUrl(link: string): string {
+    const title = this.invitesFor?.title ?? 'Classe virtuelle';
+    return 'https://wa.me/?text=' + encodeURIComponent(`Classe virtuelle « ${title} » : rejoignez la séance ici ${link}`);
   }
 }

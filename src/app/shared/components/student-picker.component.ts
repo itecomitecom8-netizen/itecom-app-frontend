@@ -79,7 +79,9 @@ export const STUDENT_LEVELS = ['L1', 'L2', 'L3', 'M1', 'M2'];
       </div>
       <div class="small text-muted mt-1">
         Liste importée : colonnes Nom · Prénom · Niveau · Email (Excel, CSV, Word ou PDF).
-        Chaque étudiant se connecte avec l'email et le mot de passe de son compte.
+        <ng-container *ngIf="!allowGuests">Chaque étudiant se connecte avec l'email et le mot de passe de son compte.</ng-container>
+        <ng-container *ngIf="allowGuests">Les étudiants se connectent avec leur compte ; les personnes sans compte
+          reçoivent par email un lien personnel pour entrer sans compte.</ng-container>
       </div>
     </div>
 
@@ -95,9 +97,13 @@ export const STUDENT_LEVELS = ['L1', 'L2', 'L3', 'M1', 'M2'];
           <i class="bi bi-x me-1"></i>Vider la liste
         </button>
       </div>
-      <div *ngIf="unknownStudents.length" class="alert alert-warning py-2 small mb-2">
+      <div *ngIf="unknownStudents.length && !allowGuests" class="alert alert-warning py-2 small mb-2">
         <i class="bi bi-exclamation-triangle me-1"></i>
         {{ unknownStudents.length }} étudiant(s) de la liste n'ont pas de compte : créez d'abord leur compte ou retirez-les.
+      </div>
+      <div *ngIf="unknownStudents.length && allowGuests" class="alert alert-info py-2 small mb-2">
+        <i class="bi bi-envelope-paper me-1"></i>
+        {{ unknownStudents.length }} personne(s) sans compte : chacune recevra par email un lien personnel pour rejoindre la séance.
       </div>
       <div style="max-height:280px;overflow:auto;border:1px solid var(--border, #e5e7eb);border-radius:10px">
         <table class="table table-sm table-hover mb-0 align-middle">
@@ -107,13 +113,14 @@ export const STUDENT_LEVELS = ['L1', 'L2', 'L3', 'M1', 'M2'];
           <tbody>
             <tr *ngFor="let s of students; let i = index"
                 [class.table-danger]="invalidEmails.has(s.email.trim().toLowerCase())"
-                [class.table-warning]="loaded && !hasAccount(s)">
+                [class.table-warning]="loaded && !hasAccount(s) && !allowGuests">
               <td class="text-muted small">{{ i + 1 }}</td>
               <td class="small">{{ s.lastName || s.name }}</td>
               <td class="small">{{ s.firstName }}</td>
               <td class="small">{{ s.level }}</td>
               <td class="small text-muted">{{ s.email }}
-                <span *ngIf="loaded && !hasAccount(s)" class="badge bg-warning text-dark ms-1">sans compte</span>
+                <span *ngIf="loaded && !hasAccount(s)" class="badge ms-1"
+                      [ngClass]="allowGuests ? 'bg-info-subtle text-info-emphasis' : 'bg-warning text-dark'">{{ allowGuests ? 'invité par email' : 'sans compte' }}</span>
               </td>
               <td>
                 <button type="button" class="btn btn-link btn-sm text-danger p-0" (click)="students.splice(i, 1)" title="Retirer">
@@ -148,6 +155,8 @@ export class StudentPickerComponent implements OnInit {
   @Input() invalidEmails = new Set<string>();
   /** Sans niveau ni étudiant : ouvert à tous (devoir) ou choix obligatoire (examen, classe virtuelle). */
   @Input() emptyMeansAll = false;
+  /** Classe virtuelle : les personnes sans compte sont acceptées (invitation personnelle par email). */
+  @Input() allowGuests = false;
 
   readonly levels = STUDENT_LEVELS;
   accounts: StudentAccount[] = [];

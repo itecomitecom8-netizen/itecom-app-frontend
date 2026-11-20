@@ -57,6 +57,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/virtual-class/virtual-class-room.component').then(m => m.VirtualClassRoomComponent)
   },
   {
+    // Invitation sans compte : lien partagé ou personnel d'une classe virtuelle
+    path: 'classe/:token',
+    loadComponent: () => import('./features/virtual-class/virtual-class-guest.component').then(m => m.VirtualClassGuestComponent)
+  },
+  {
     path: 'my-exams',
     canActivate: [authGuard],
     loadComponent: () => import('./features/my-exams/my-exams.component').then(m => m.MyExamsComponent)
