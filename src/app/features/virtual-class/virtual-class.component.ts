@@ -140,6 +140,16 @@ interface InviteFailure { email: string; name: string; reason: string; }
                      style="color:#fff; font-size:1.5rem; margin-left:2px"></i>
                 </div>
               </div>
+
+              <!-- Plein écran -->
+              <button *ngIf="playingVcId === vc.id && playingObjectUrl && loadingVcId !== vc.id"
+                      type="button" title="Plein écran" aria-label="Afficher la vidéo en plein écran"
+                      (click)="openFullscreen($event)"
+                      style="position:absolute; right:8px; bottom:8px; z-index:2; border:0; border-radius:8px;
+                             width:36px; height:36px; background:rgba(0,0,0,.6); color:#fff;
+                             display:flex; align-items:center; justify-content:center">
+                <i class="bi bi-arrows-fullscreen"></i>
+              </button>
             </div>
 
             <div class="card-body p-4">
@@ -558,6 +568,31 @@ export class VirtualClassComponent implements OnInit {
     this.currentVideoEl = event.target as HTMLVideoElement;
     this.currentVideoEl.play();
     this.videoIsPaused = false;
+  }
+
+  /** Vidéo en plein écran, avec la barre de lecture native (avance, retour, volume) pour bien la revoir. */
+  openFullscreen(event: Event) {
+    event.stopPropagation();
+    const video = this.currentVideoEl;
+    if (!video) return;
+    video.controls = true;
+    const iosVideo = video as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
+    if (video.requestFullscreen) {
+      const onChange = () => {
+        if (document.fullscreenElement) return;
+        video.controls = false;
+        document.removeEventListener('fullscreenchange', onChange);
+      };
+      document.addEventListener('fullscreenchange', onChange);
+      video.requestFullscreen().catch(() => {
+        video.controls = false;
+        document.removeEventListener('fullscreenchange', onChange);
+      });
+    } else if (iosVideo.webkitEnterFullscreen) {
+      // iPhone : pas d'API plein écran standard sur les vidéos
+      video.addEventListener('webkitendfullscreen', () => { video.controls = false; }, { once: true });
+      iosVideo.webkitEnterFullscreen();
+    }
   }
 
   private stopCurrentVideo() {
