@@ -44,8 +44,8 @@ interface InviteFailure { email: string; name: string; reason: string; }
           <h1 class="fw-bold mb-1"><i class="bi bi-camera-video me-1"></i>Classes Virtuelles</h1>
           <p class="text-muted">Rejoignez des sessions en direct avec vos professeurs</p>
         </div>
-        <div *ngIf="authService.isTeacher || authService.isAdmin">
-          <button class="btn btn-primary-custom" (click)="showCreateModal = true">
+        <div *ngIf="authService.isAdmin">
+          <button class="btn btn-primary-custom" (click)="openCreate()">
             <i class="bi bi-plus-circle me-2"></i>Créer une session
           </button>
         </div>
@@ -116,6 +116,7 @@ interface InviteFailure { email: string; name: string; reason: string; }
               <video *ngIf="playingVcId === vc.id && playingObjectUrl"
                      [src]="playingObjectUrl"
                      preload="metadata" playsinline
+                     (click)="$event.stopPropagation()"
                      (canplay)="onVideoReady($event)"
                      (error)="onVideoError()"
                      (pause)="videoIsPaused = true"
@@ -199,7 +200,7 @@ interface InviteFailure { email: string; name: string; reason: string; }
               </div>
               <button *ngIf="canSeeAttendance(vc) && vc.status !== 'COMPLETED' && vc.status !== 'CANCELLED'"
                       class="btn btn-outline-secondary w-100 mt-2" (click)="openInvites(vc)">
-                <i class="bi bi-link-45deg me-2"></i>Inviter sans compte
+                <i class="bi bi-link-45deg me-2"></i>Lien de la séance
                 <span *ngIf="vc.guestCount" class="badge bg-secondary ms-1">{{ vc.guestCount }}</span>
                 <span *ngIf="vc.sharedLinkActive" class="badge bg-success ms-1" title="Lien partagé actif"><i class="bi bi-link"></i></span>
               </button>
@@ -256,17 +257,27 @@ interface InviteFailure { email: string; name: string; reason: string; }
                 </div>
               </div>
               <div class="mb-3">
-                <label class="form-label fw-semibold">Étudiants *</label>
-                <app-student-picker [students]="newStudents" [targetLevels]="newLevels" [allowGuests]="true"></app-student-picker>
-                <div class="form-check mt-3">
-                  <input class="form-check-input" type="checkbox" id="vc-share-link" [(ngModel)]="newShareLink">
-                  <label class="form-check-label" for="vc-share-link">
-                    <strong>Créer un lien d'invitation à partager</strong>
-                    <span class="d-block small text-muted">Toute personne qui a le lien entre en tapant son nom, sans compte (à envoyer par WhatsApp, email…).</span>
-                  </label>
+                <label class="form-label fw-semibold" for="vc-teacher">Professeur *</label>
+                <select id="vc-teacher" class="form-select" [(ngModel)]="newTeacherId">
+                  <option [ngValue]="null" disabled>Choisir le professeur qui anime la séance</option>
+                  <option *ngFor="let t of teachers" [ngValue]="t.id">{{ t.firstName }} {{ t.lastName }} · {{ t.email }}</option>
+                </select>
+                <div *ngIf="teachersLoaded && !teachers.length" class="form-text text-danger">
+                  Aucun compte professeur : créez-le d'abord depuis la gestion des utilisateurs.
                 </div>
-                <div *ngIf="createError" class="alert alert-danger py-2 mt-2 mb-0 small">{{ createError }}</div>
               </div>
+              <div class="alert alert-light border small mb-3">
+                <i class="bi bi-link-45deg me-1"></i>
+                <strong>Un lien unique est créé pour la séance.</strong> Envoyez-le au professeur et aux étudiants
+                (WhatsApp, email…) : le professeur, connecté à son compte, y entre en animateur ;
+                les étudiants y entrent en tapant leur nom, sans compte.
+              </div>
+              <div class="mb-3">
+                <label class="form-label fw-semibold">Étudiants avec compte <span class="fw-normal text-muted">(facultatif)</span></label>
+                <app-student-picker [students]="newStudents" [targetLevels]="newLevels" [allowGuests]="true"></app-student-picker>
+                <div class="form-text">La séance s'affiche aussi dans leur espace « Classes virtuelles ».</div>
+              </div>
+              <div *ngIf="createError" class="alert alert-danger py-2 mb-3 small">{{ createError }}</div>
               <div class="alert alert-info small mb-0">
                 <i class="bi bi-info-circle me-1"></i>
                 Un salon de visioconférence intégré sera généré automatiquement pour cette session,
@@ -289,7 +300,7 @@ interface InviteFailure { email: string; name: string; reason: string; }
           <div class="modal-content border-0 rounded-4">
             <div class="modal-header border-0 p-4 pb-2">
               <div>
-                <h5 class="modal-title fw-bold"><i class="bi bi-link-45deg me-1"></i>Inviter sans compte</h5>
+                <h5 class="modal-title fw-bold"><i class="bi bi-link-45deg me-1"></i>Lien de la séance</h5>
                 <div class="small text-muted">{{ invitesFor.title }}</div>
               </div>
               <button class="btn-close" aria-label="Fermer" (click)="closeInvites()"></button>
@@ -302,8 +313,8 @@ interface InviteFailure { email: string; name: string; reason: string; }
               <ng-container *ngIf="invites">
                 <!-- Lien partagé -->
                 <h6 class="fw-bold mt-1"><i class="bi bi-share me-2 text-primary"></i>Lien à partager</h6>
-                <p class="small text-muted mb-2">Toute personne qui a ce lien entre dans la séance en tapant son nom, sans compte.
-                  Elle apparaît dans les présences comme « invité ».</p>
+                <p class="small text-muted mb-2">Le même lien pour le professeur et les étudiants. Le professeur, connecté à son compte,
+                  y entre en animateur ; les étudiants entrent en tapant leur nom, sans compte, et apparaissent dans les présences comme « invité ».</p>
                 <ng-container *ngIf="invites.sharedLink && invites.sharedLinkActive; else noLink">
                   <div class="input-group mb-2">
                     <input class="form-control" [value]="invites.sharedLink" readonly aria-label="Lien d'invitation partagé" (focus)="$any($event.target).select()">
@@ -417,7 +428,9 @@ export class VirtualClassComponent implements OnInit {
   newClass: any = { title: '', description: '', scheduledAt: '', durationMinutes: 60 };
   newStudents: PickedStudent[] = [];
   newLevels = new Set<string>();
-  newShareLink = false;
+  newTeacherId: number | null = null;
+  teachers: { id: number; firstName: string; lastName: string; email: string }[] = [];
+  teachersLoaded = false;
   createError = '';
 
   // Invitations sans compte (lien partagé, invitations personnelles)
@@ -517,6 +530,8 @@ export class VirtualClassComponent implements OnInit {
 
   toggleInlinePlay(vc: VirtualClass) {
     if (!vc.hasRecording) return;
+    // En plein écran, les clics sur la barre de lecture native ne doivent pas relancer ou mettre en pause la vidéo
+    if (document.fullscreenElement) return;
 
     if (this.playingVcId === vc.id) {
       // Même vidéo : toggle play/pause
@@ -636,16 +651,29 @@ export class VirtualClassComponent implements OnInit {
     });
   }
 
+  openCreate() {
+    this.showCreateModal = true;
+    this.createError = '';
+    if (this.teachersLoaded) return;
+    this.http.get<{ id: number; firstName: string; lastName: string; email: string }[]>('/api/admin/users/teachers').subscribe({
+      next: list => {
+        this.teachers = [...list].sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`, 'fr'));
+        this.teachersLoaded = true;
+      },
+      error: () => { this.createError = 'Impossible de charger la liste des professeurs.'; }
+    });
+  }
+
   createClass() {
-    if (!this.newStudents.length && !this.newLevels.size && !this.newShareLink) {
-      this.createError = 'Choisissez au moins un niveau, un étudiant ou un lien d\'invitation.';
+    if (!this.newTeacherId) {
+      this.createError = 'Choisissez le professeur qui anime la séance.';
       return;
     }
     const formData = new FormData();
     const data = { ...this.newClass, targetLevels: [...this.newLevels].join(',') };
     formData.append('class', new Blob([JSON.stringify(data)], { type: 'application/json' }));
     if (this.newStudents.length) formData.append('studentList', studentsCsv(this.newStudents));
-    if (this.newShareLink) formData.append('shareLink', 'true');
+    formData.append('teacherId', String(this.newTeacherId));
     this.http.post<VirtualClass>('/api/teacher/virtual-classes', formData).subscribe({
       next: (vc) => {
         this.classes.unshift(vc);
@@ -653,10 +681,10 @@ export class VirtualClassComponent implements OnInit {
         this.newClass = { title: '', description: '', scheduledAt: '', durationMinutes: 60 };
         this.newStudents = [];
         this.newLevels = new Set();
+        this.newTeacherId = null;
         this.createError = '';
-        // Invités sans compte : le professeur retrouve aussitôt le lien à partager et les envois
-        if (this.newShareLink || vc.guestCount) this.openInvites(vc);
-        this.newShareLink = false;
+        // Le lien unique à envoyer au professeur et aux étudiants
+        this.openInvites(vc);
       },
       error: (e) => { this.createError = e.error?.message || 'Impossible de créer la session. Vérifiez les informations et la liste des étudiants.'; }
     });

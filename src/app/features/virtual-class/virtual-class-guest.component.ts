@@ -1,11 +1,12 @@
 import { Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { HttpClient, HttpContext, HttpParams } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { SILENT_ERRORS } from '../../core/interceptors/error.interceptor';
 import { DialogService } from '../../core/services/dialog.service';
+import { AuthService } from '../../core/services/auth.service';
 
 declare const JitsiMeetExternalAPI: any;
 
@@ -13,6 +14,8 @@ interface InviteInfo {
   title: string; description: string | null; scheduledAt: string | null; durationMinutes: number | null;
   teacherName: string | null; status: string; shared: boolean; guestName: string | null;
   canJoin: boolean; message: string | null;
+  /** Le visiteur connecté anime la séance (professeur ou admin) : il entre dans la salle complète. */
+  hostClassId: number | null;
 }
 
 interface JoinResponse { token: string; domain: string; roomName: string; displayName: string; attendanceId: number; }
@@ -27,7 +30,7 @@ const NAME_KEY = 'itecom-guest-name';
 @Component({
   selector: 'app-virtual-class-guest',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, RouterLink],
   template: `
     <div class="guest-page">
       <header class="guest-header">
@@ -77,6 +80,12 @@ const NAME_KEY = 'itecom-guest-name';
             </button>
             <p class="small text-muted mb-0">Autorisez la caméra et le micro quand le navigateur le demande. Aucun compte n'est nécessaire.</p>
           </form>
+
+          <p *ngIf="!auth.isAuthenticated" class="small text-muted mt-4 mb-0 pt-3 border-top">
+            <i class="bi bi-person-video3 me-1"></i>Vous êtes le professeur de cette séance ?
+            <a routerLink="/auth/login" [queryParams]="{ returnUrl: '/classe/' + token }">Connectez-vous</a>
+            pour l'animer avec ce même lien.
+          </p>
         </div>
 
         <!-- Dans la salle -->
@@ -135,7 +144,8 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
   private answeringCallId: number | null = null;
   private readonly silent = { context: new HttpContext().set(SILENT_ERRORS, true) };
 
-  constructor(private route: ActivatedRoute, private http: HttpClient, private dialogs: DialogService) {}
+  constructor(private route: ActivatedRoute, private router: Router, private http: HttpClient,
+              private dialogs: DialogService, public auth: AuthService) {}
 
   get waiting(): boolean {
     return !!this.info && !this.info.canJoin && this.info.status === 'SCHEDULED';
@@ -163,6 +173,11 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
   private loadInfo() {
     this.http.get<InviteInfo>(this.base, this.silent).subscribe({
       next: info => {
+        // Professeur connecté : même lien, mais il entre en animateur (démarrage, enregistrement, appel)
+        if (info.hostClassId) {
+          this.router.navigate(['/virtual-class', info.hostClassId, 'room'], { replaceUrl: true });
+          return;
+        }
         this.info = info;
         this.loading = false;
         // Séance pas encore démarrée : la page s'actualise seule
