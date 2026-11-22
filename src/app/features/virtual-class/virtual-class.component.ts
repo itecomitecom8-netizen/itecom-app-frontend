@@ -25,6 +25,7 @@ interface VirtualClass {
   courseTitle: string | null;
   thumbnailData: string | null;
   hasRecording: boolean;
+  recordingLost?: boolean;
   guestCount?: number;
   sharedLinkActive?: boolean;
 }
@@ -193,7 +194,12 @@ interface InviteFailure { email: string; name: string; reason: string; }
                   <i class="bi bi-archive me-2"></i>Session non tenue
                 </button>
               </div>
-              <div *ngIf="vc.status === 'COMPLETED' && !vc.hasRecording" class="d-grid">
+              <div *ngIf="vc.status === 'COMPLETED' && !vc.hasRecording && vc.recordingLost"
+                   class="alert alert-warning small py-2 mb-0" role="status">
+                <i class="bi bi-exclamation-triangle me-1"></i>
+                Enregistrement perdu lors d'une mise à jour du serveur : la vidéo n'est plus disponible.
+              </div>
+              <div *ngIf="vc.status === 'COMPLETED' && !vc.hasRecording && !vc.recordingLost" class="d-grid">
                 <button class="btn btn-outline-secondary w-100" disabled>
                   <i class="bi bi-archive me-2"></i>Session terminée (sans enregistrement)
                 </button>
