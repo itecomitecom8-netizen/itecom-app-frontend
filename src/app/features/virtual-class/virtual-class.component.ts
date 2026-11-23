@@ -52,6 +52,15 @@ interface InviteFailure { email: string; name: string; reason: string; }
         </div>
       </div>
 
+      <!-- Filtre par professeur (admin) -->
+      <div *ngIf="authService.isAdmin && teacherOptions.length > 1" class="d-flex align-items-center gap-2 mb-3" style="max-width:420px">
+        <label for="vc-teacher-filter" class="small fw-semibold text-nowrap mb-0"><i class="bi bi-person-video3 me-1"></i>Professeur</label>
+        <select id="vc-teacher-filter" class="form-select form-select-sm" [(ngModel)]="teacherFilter" (ngModelChange)="classesPg.reset()">
+          <option [ngValue]="null">Tous les professeurs</option>
+          <option *ngFor="let t of teacherOptions" [ngValue]="t.id">{{ t.name }}</option>
+        </select>
+      </div>
+
       <!-- Tabs -->
       <ul class="nav nav-pills mb-4">
         <li class="nav-item">
@@ -215,6 +224,12 @@ interface InviteFailure { email: string; name: string; reason: string; }
                  class="btn btn-outline-primary w-100 mt-2">
                 <i class="bi bi-person-check me-2"></i>Présences et rapport
               </a>
+              <!-- Admin : supprimer la séance, quel que soit l'onglet (à venir, en cours, passée) -->
+              <button *ngIf="authService.isAdmin" type="button" class="btn btn-outline-danger w-100 mt-2"
+                      [disabled]="deletingClassId === vc.id" (click)="deleteSession(vc)">
+                <span *ngIf="deletingClassId === vc.id" class="spinner-border spinner-border-sm me-2"></span>
+                <i *ngIf="deletingClassId !== vc.id" class="bi bi-trash3 me-2"></i>Supprimer la séance
+              </button>
             </div>
           </div>
         </div>
@@ -463,10 +478,20 @@ export class VirtualClassComponent implements OnInit {
     { icon: 'bi-folder', title: 'Revoyez', desc: "Le cours enregistré reste disponible dans l'onglet Passées" }
   ];
 
+  /** Professeur choisi dans le filtre (admin) ; null : tous. */
+  teacherFilter: number | null = null;
+
+  /** Professeurs des séances, pour le filtre. */
+  get teacherOptions(): { id: number; name: string }[] {
+    const byId = new Map<number, string>();
+    this.classes.forEach(vc => { if (vc.teacherId != null) byId.set(vc.teacherId, vc.teacherName || 'Professeur'); });
+    return [...byId].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+  }
+
   get filteredClasses(): VirtualClass[] {
     let now = new Date();
     return this.classes.filter(vc => {
-      let date = new Date(vc.scheduledAt);
+      if (this.teacherFilter !== null && vc.teacherId !== this.teacherFilter) return false;
       if (this.activeTab === 'ongoing') return vc.status === 'ONGOING';
       // « À venir » tant que la séance n'est pas finie ; une fois l'heure de fin passée sans démarrage : « Non tenue » (Passées)
       if (this.activeTab === 'upcoming') return vc.status === 'SCHEDULED' && !this.isOverdue(vc);
@@ -631,6 +656,29 @@ export class VirtualClassComponent implements OnInit {
   }
 
   confirmDeleteRecording(vc: VirtualClass) { this.deletingRecording = vc; }
+
+  deletingClassId: number | null = null;
+
+  /** Admin : supprime la séance entière (enregistrement, présences et lien compris). */
+  async deleteSession(vc: VirtualClass) {
+    const live = vc.status === 'ONGOING' ? ' Elle est en direct : les participants seront déconnectés du lien.' : '';
+    const ok = await this.dialogs.confirmDelete('la séance « ' + vc.title + ' »',
+      'Son enregistrement, ses présences et son lien seront supprimés définitivement.' + live);
+    if (!ok) return;
+    if (this.playingVcId === vc.id) this.stopCurrentVideo();
+    this.deletingClassId = vc.id;
+    this.http.delete(`/api/admin/virtual-classes/${vc.id}`).subscribe({
+      next: () => {
+        this.classes = this.classes.filter(c => c.id !== vc.id);
+        this.deletingClassId = null;
+        this.dialogs.toast('Séance supprimée.');
+      },
+      error: e => {
+        this.deletingClassId = null;
+        this.dialogs.toast(e.error?.message || 'Impossible de supprimer la séance.', 'danger');
+      }
+    });
+  }
 
   deleteRecording() {
     if (!this.deletingRecording) return;

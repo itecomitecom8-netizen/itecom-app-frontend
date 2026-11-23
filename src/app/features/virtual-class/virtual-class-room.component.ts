@@ -32,6 +32,8 @@ interface RollCall {
 interface JitsiTokenResponse {
   token: string;
   domain: string;
+  /** Nom affiché dans la salle, « (Professeur) » pour le professeur de la séance. */
+  displayName?: string;
   roomName: string;
 }
 
@@ -469,7 +471,7 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         width: '100%',
         height: '100%',
         userInfo: {
-          displayName: user ? `${user.firstName} ${user.lastName}` : 'Utilisateur'
+          displayName: jitsi.displayName || (user ? `${user.firstName} ${user.lastName}` : 'Utilisateur')
         },
         configOverwrite: {
           prejoinPageEnabled: false,
@@ -672,7 +674,6 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         next: () => {
           this.uploading = false;
           this.uploadSuccess = true;
-          if (this.vc) this.vc.status = 'COMPLETED';
           onDone?.();
         },
         error: () => {
