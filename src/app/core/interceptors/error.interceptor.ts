@@ -48,10 +48,17 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
                  && !req.url.includes('/api/auth/') && !req.url.includes('/api/exam/access/')) {
         // Les erreurs 400/404/409 sont affichées par les formulaires eux-mêmes ;
         // les autres échouaient souvent sans aucun message (page vide).
-        const message = globalErrorMessage(error);
+        const write = req.method !== 'GET' && req.method !== 'HEAD';
+        // Une action (créer, modifier, supprimer, publier…) qui échoue : popup claire avec la raison
+        const message = globalErrorMessage(error)
+          || (write ? (error.error?.message || "L'action n'a pas pu être effectuée. Vérifiez les informations puis réessayez.") : null);
         if (message && (message !== lastToast.message || Date.now() - lastToast.at > 4000)) {
           lastToast = { message, at: Date.now() };
-          dialogs.toast(message, 'danger', 5000);
+          if (write) {
+            dialogs.alert({ title: 'Action non effectuée', message, icon: 'bi-exclamation-triangle', tone: 'danger' });
+          } else {
+            dialogs.toast(message, 'danger', 5000);
+          }
         }
       }
       return throwError(() => error);

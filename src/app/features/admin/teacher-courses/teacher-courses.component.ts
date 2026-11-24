@@ -140,9 +140,21 @@ export class TeacherCoursesComponent implements OnInit {
       .afterClosed.then(() => this.load());
   }
 
-  togglePublish(course: Course) {
-    this.courseService.updateCourse(course.id, { ...course, published: !course.published }).subscribe({
-      next: (updated) => { course.published = updated.published; }
+  async togglePublish(course: Course) {
+    const publish = !course.published;
+    const ok = await this.dialogs.confirm(publish
+      ? { title: `Publier le cours « ${course.title} » ?`, message: 'Les étudiants pourront le voir et le suivre.',
+          icon: 'bi-eye', confirmText: 'Oui, publier' }
+      : { title: `Masquer le cours « ${course.title} » ?`,
+          message: "Les étudiants ne le verront plus. Leur progression est conservée et réapparaîtra s'il est republié.",
+          icon: 'bi-eye-slash', tone: 'warning', confirmText: 'Oui, masquer' });
+    if (!ok) return;
+    this.courseService.updateCourse(course.id, { ...course, published: publish }).subscribe({
+      next: (updated) => {
+        course.published = updated.published;
+        this.dialogs.success(publish ? 'Cours publié' : 'Cours masqué',
+          publish ? `« ${course.title} » est maintenant visible par les étudiants.` : `« ${course.title} » n'est plus visible par les étudiants.`);
+      }
     });
   }
 
@@ -154,12 +166,10 @@ export class TeacherCoursesComponent implements OnInit {
       next: () => {
         this.courses = this.courses.filter(c => c.id !== course.id);
         this.deletingId = null;
-        this.dialogs.toast('Cours supprimé');
+        this.dialogs.success('Cours supprimé', `« ${course.title} » a été supprimé, avec son PDF et la progression des étudiants.`);
       },
-      error: (err) => {
-        this.deletingId = null;
-        this.dialogs.toast(err.error?.message || 'Suppression impossible', 'danger');
-      }
+      // La raison de l'échec est affichée dans une popup par l'intercepteur d'erreurs
+      error: () => { this.deletingId = null; }
     });
   }
 

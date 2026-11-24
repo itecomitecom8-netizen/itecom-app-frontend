@@ -383,14 +383,14 @@ export class AdminScolariteComponent implements OnInit {
   saveSheet() {
     if (!this.sheetRows) return;
     const invalid = this.sheetRows.find(r => r.grade !== null && (r.grade as any) !== '' && (r.grade < 0 || r.grade > 20));
-    if (invalid) { this.dialogs.toast(`Note invalide pour ${invalid.studentName} (0 à 20).`, 'danger'); return; }
+    if (invalid) { this.dialogs.alert({ title: 'Note invalide', message: `La note de ${invalid.studentName} doit être comprise entre 0 et 20.`, icon: 'bi-exclamation-triangle', tone: 'warning' }); return; }
     this.busy = true;
     this.school.saveGradeSheet({
       academicYear: this.year, ...this.sheet, subject: this.sheet.subject.trim(), coefficient: this.sheetCoefficient,
       entries: this.sheetRows.map(r => ({ enrollmentId: r.enrollmentId, grade: r.grade === null || (r.grade as any) === '' ? null : r.grade, comment: r.comment }))
     }).subscribe({
-      next: r => { this.busy = false; this.dialogs.toast(`${r.saved} note(s) enregistrée(s).`); this.loadSheet(); this.loadSubjects(); },
-      error: err => { this.busy = false; this.dialogs.toast(apiError(err), 'danger', 6000); }
+      next: r => { this.busy = false; this.dialogs.success('Notes enregistrées', `${r.saved} note(s) enregistrée(s) en brouillon. Les étudiants ne les verront qu'après « Publier ».`); this.loadSheet(); this.loadSubjects(); },
+      error: err => { this.busy = false; /* raison affichée en popup par l'intercepteur d'erreurs */; }
     });
   }
 
@@ -401,9 +401,9 @@ export class AdminScolariteComponent implements OnInit {
     if (!ok) return;
     this.busy = true;
     this.school.publishGrades(this.year, this.sheet.level, this.sheet.semester).subscribe({
-      next: r => { this.busy = false; this.dialogs.toast(r.published ? `${r.published} note(s) publiée(s).` : 'Aucune note en brouillon à publier.', r.published ? 'success' : 'info');
+      next: r => { this.busy = false; this.dialogs.success(r.published ? 'Notes publiées' : 'Rien à publier', r.published ? `${r.published} note(s) publiée(s) : les étudiants peuvent maintenant les consulter.` : 'Aucune note en brouillon à publier.');
                    if (this.sheetRows) this.loadSheet(); },
-      error: err => { this.busy = false; this.dialogs.toast(apiError(err), 'danger', 6000); }
+      error: err => { this.busy = false; /* raison affichée en popup par l'intercepteur d'erreurs */; }
     });
   }
 
@@ -414,19 +414,27 @@ export class AdminScolariteComponent implements OnInit {
   }
 
   // ── Relances et annonces ──
-  remind() {
+  async remind() {
+    const ok = await this.dialogs.confirm({ title: 'Relancer les étudiants en retard ?',
+      message: `Un message de rappel sera envoyé à chaque étudiant en retard de paiement pour l'année ${this.year}.`,
+      icon: 'bi-bell', tone: 'warning', confirmText: 'Oui, envoyer les relances' });
+    if (!ok) return;
     this.busy = true;
     this.school.sendReminders(this.year).subscribe({
-      next: r => { this.busy = false; this.dialogs.toast(r.sent ? `${r.sent} étudiant(s) relancé(s).` : 'Aucun étudiant en retard de paiement.', r.sent ? 'success' : 'info'); },
-      error: err => { this.busy = false; this.dialogs.toast(apiError(err), 'danger'); }
+      next: r => { this.busy = false; this.dialogs.success(r.sent ? 'Relances envoyées' : 'Aucune relance', r.sent ? `${r.sent} étudiant(s) en retard ont reçu un rappel de paiement.` : 'Aucun étudiant en retard de paiement : aucun message envoyé.'); },
+      error: err => { this.busy = false; /* raison affichée en popup par l'intercepteur d'erreurs */; }
     });
   }
 
-  sendAnnouncement() {
+  async sendAnnouncement() {
+    const ok = await this.dialogs.confirm({ title: `Envoyer l'annonce « ${this.announcement.title} » ?`,
+      message: "Elle sera envoyée à tous les étudiants concernés et ne pourra pas être retirée.",
+      icon: 'bi-megaphone', confirmText: "Oui, envoyer l'annonce" });
+    if (!ok) return;
     this.busy = true;
     this.school.broadcast({ ...this.announcement, academicYear: this.year }).subscribe({
-      next: r => { this.busy = false; this.dialogs.toast(`Annonce envoyée à ${r.sent} étudiant(s).`); this.announcement = { ...this.announcement, title: '', message: '' }; },
-      error: err => { this.busy = false; this.dialogs.toast(apiError(err), 'danger'); }
+      next: r => { this.busy = false; this.dialogs.success('Annonce envoyée', `L'annonce a été envoyée à ${r.sent} étudiant(s).`); this.announcement = { ...this.announcement, title: '', message: '' }; },
+      error: err => { this.busy = false; /* raison affichée en popup par l'intercepteur d'erreurs */; }
     });
   }
 

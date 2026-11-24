@@ -164,7 +164,11 @@ export class CreateCourseComponent {
   }
 
   finish(saved: boolean) {
-    if (saved) this.dialogs.toast('Cours créé');
+    if (saved) {
+      const { title, published } = this.courseForm.value;
+      this.dialogs.success('Cours créé', `« ${title} » a été créé`
+        + (published ? ' et il est visible par les étudiants.' : " en brouillon : publiez-le pour que les étudiants le voient."));
+    }
     if (this.dialogRef) this.dialogRef.close(saved);
     else this.router.navigate(['/teacher/courses']);
   }

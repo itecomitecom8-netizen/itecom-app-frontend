@@ -448,6 +448,7 @@ export class ExamDetailComponent implements OnInit {
         this.addStudentSaving = false;
         this.resetAddStudents();
         this.addStudentSuccess = `${res.message || 'Étudiants ajoutés avec succès.'}`;
+        this.dialogs.success('Étudiants ajoutés', this.addStudentSuccess);
         this.loadExam();
         setTimeout(() => this.addStudentSuccess = '', 5000);
       },

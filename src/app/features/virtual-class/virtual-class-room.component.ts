@@ -42,6 +42,19 @@ interface JitsiTokenResponse {
   standalone: true,
   imports: [CommonModule, RouterLink],
   template: `
+    <!-- Fin de séance dans moins de 2 minutes : chrono pour le professeur / l'administrateur -->
+    <div *ngIf="isTeacher && endCountdown !== null" class="end-countdown shadow-lg" role="alert" aria-live="assertive">
+      <div class="d-flex align-items-center gap-2 mb-1">
+        <i class="bi bi-stopwatch fs-4"></i>
+        <strong>Fin de la séance</strong>
+      </div>
+      <div class="end-countdown-time">{{ endCountdownLabel }}</div>
+      <div class="small">
+        La durée prévue ({{ vc?.durationMinutes }} min) est presque atteinte : la séance se terminera automatiquement.
+        <span *ngIf="recording">L'enregistrement sera arrêté et sauvegardé dans l'onglet « Passées ».</span>
+      </div>
+    </div>
+
     <div class="fade-in-up">
       <div class="d-flex align-items-center gap-3 mb-3">
         <a routerLink="/virtual-class" class="btn btn-outline-secondary btn-sm">
@@ -110,11 +123,14 @@ interface JitsiTokenResponse {
             <button class="btn btn-sm btn-danger" *ngIf="!recording" (click)="startRecording()">
               <i class="bi bi-record-circle me-1"></i>Démarrer l'enregistrement
             </button>
-            <button class="btn btn-sm btn-outline-danger" *ngIf="recording" (click)="stopRecording()">
-              <i class="bi bi-stop-circle me-1"></i>Arrêter et enregistrer
+            <button class="btn btn-sm btn-outline-danger" *ngIf="recording" (click)="confirmStopRecording()">
+              <i class="bi bi-stop-circle me-1"></i>Arrêter l'enregistrement
             </button>
             <span *ngIf="recording" class="badge bg-danger">
               <i class="bi bi-record-circle-fill me-1"></i>Enregistrement en cours...
+            </span>
+            <span *ngIf="recording && lastSavedAt" class="text-success small" title="Le cours est envoyé à la plateforme pendant l'enregistrement">
+              <i class="bi bi-cloud-check me-1"></i>Sauvegardé automatiquement à {{ lastSavedAt | date:'HH:mm:ss' }}
             </span>
             <span *ngIf="uploading" class="text-muted small">
               <span class="spinner-border spinner-border-sm me-1"></span>Envoi de l'enregistrement...
@@ -145,7 +161,7 @@ interface JitsiTokenResponse {
         </div>
 
         <div *ngIf="uploadSuccess" class="alert alert-success">
-          <i class="bi bi-check-circle me-2"></i>Enregistrement sauvegardé dans la plateforme. Il sera disponible dans l'onglet "Passées".
+          <i class="bi bi-check-circle me-2"></i>Cours enregistré dans la plateforme. Vous le retrouverez dans l'onglet « Passées » des Classes virtuelles une fois la séance terminée.
         </div>
         <div *ngIf="uploadError" class="alert alert-danger">
           <i class="bi bi-exclamation-circle me-2"></i>{{ uploadError }}
@@ -174,6 +190,13 @@ interface JitsiTokenResponse {
     </div>
   `,
   styles: [`
+    .end-countdown {
+      position: fixed; left: 20px; bottom: 20px; z-index: 2000; width: 300px;
+      background: #b91c1c; color: #fff; border-radius: 14px; padding: 14px 16px;
+      animation: pulse-end 1s ease-in-out infinite alternate;
+    }
+    .end-countdown-time { font-size: 2.4rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; margin-bottom: 4px; }
+    @keyframes pulse-end { from { box-shadow: 0 0 0 0 rgba(185,28,28,.6); } to { box-shadow: 0 0 0 10px rgba(185,28,28,0); } }
     .roll-call-reminder { position: sticky; top: 72px; z-index: 5; border-left: 6px solid #b4690e; }
   `]
 })
@@ -216,6 +239,29 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
   private jitsiApi: any;
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
+
+  // Sauvegarde pendant le cours : un morceau envoyé toutes les 20 s, dans l'ordre, renvoyé en cas de coupure
+  private static readonly CHUNK_MS = 20000;
+  private chunkSeq = 0;
+  private chunkQueue: { seq: number; blob: Blob }[] = [];
+  private chunkSending = false;
+  /** Le serveur n'a pas pu suivre les morceaux : à la fin, la vidéo complète est envoyée d'un coup. */
+  private chunkFailed = false;
+  private chunkWaiters: (() => void)[] = [];
+  lastSavedAt: Date | null = null;
+
+  // Fin automatique : à l'heure prévue + durée (ou, séance lancée après cette heure, à l'entrée + durée)
+  private static readonly WARN_BEFORE_END_MS = 2 * 60 * 1000;
+  private endAt = 0;
+  private endTicker: ReturnType<typeof setInterval> | null = null;
+  private autoEnded = false;
+  /** Secondes restantes, affichées dans le chrono des 2 dernières minutes ; null en dehors. */
+  endCountdown: number | null = null;
+
+  get endCountdownLabel(): string {
+    const s = Math.max(0, this.endCountdown ?? 0);
+    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  }
   private displayStream: MediaStream | null = null;
   private micStream: MediaStream | null = null;
   private recordingAudioCtx: AudioContext | null = null;
@@ -239,6 +285,7 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         this.vc = data;
         this.loading = false;
         setTimeout(() => this.initJitsi(), 0);
+        this.startEndTimer();
       },
       error: () => { this.loading = false; }
     });
@@ -252,6 +299,8 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
    */
   @HostListener('window:beforeunload', ['$event'])
   beforeUnload(event: BeforeUnloadEvent) {
+    // Dernier morceau envoyé tout de suite : on perd au plus quelques secondes si la page se ferme
+    if (this.recording && this.mediaRecorder?.state === 'recording') this.mediaRecorder.requestData();
     this.leaveAttendance(true);
     if (this.recording || this.uploading) {
       event.preventDefault();
@@ -260,6 +309,7 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    if (this.endTicker) clearInterval(this.endTicker);
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       this.mediaRecorder.stop();
     }
@@ -607,6 +657,10 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
 
       // 5. Lancer l'enregistrement
       this.recordedChunks = [];
+      this.chunkSeq = 0;
+      this.chunkQueue = [];
+      this.chunkFailed = false;
+      this.lastSavedAt = null;
       const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
         ? 'video/webm;codecs=vp9,opus'
         : 'video/webm';
@@ -617,29 +671,71 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         audioBitsPerSecond: 32_000
       });
       this.mediaRecorder.ondataavailable = (e: BlobEvent) => {
-        if (e.data.size > 0) this.recordedChunks.push(e.data);
+        if (e.data.size === 0) return;
+        this.recordedChunks.push(e.data);
+        this.chunkQueue.push({ seq: this.chunkSeq++, blob: e.data });
+        this.sendChunks();
       };
-      this.mediaRecorder.onstop = () => this.uploadRecording(this.stopCallback);
-      display.getVideoTracks()[0].onended = () => this.stopRecording();
-      this.mediaRecorder.start();
+      this.mediaRecorder.onstop = () => this.finishRecording();
+      // Partage d'écran arrêté depuis le navigateur : l'enregistrement s'arrête et est sauvegardé
+      display.getVideoTracks()[0].onended = () => {
+        if (!this.recording) return;
+        this.stopRecording(saved => this.announceSaved(saved,
+          "Le partage d'écran a été arrêté, donc l'enregistrement aussi. "));
+      };
+      // Un morceau toutes les 20 s : le cours est sauvegardé au fur et à mesure
+      this.mediaRecorder.start(VirtualClassRoomComponent.CHUNK_MS);
       this.recording = true;
     } catch (e) {
       this.uploadError = "Impossible de démarrer l'enregistrement (autorisation refusée).";
     }
   }
 
-  /** Appelé une fois l'enregistrement arrêté ET envoyé (ou s'il n'y avait rien à envoyer). */
-  private stopCallback: (() => void) | null = null;
+  /** Appelé une fois l'enregistrement arrêté ET sauvegardé (true) ou non (false). */
+  private stopCallback: ((saved: boolean) => void) | null = null;
 
-  stopRecording(onStopped?: () => void) {
+  /** Bouton « Arrêter l'enregistrement » : confirmation, puis message indiquant où trouver le cours. */
+  async confirmStopRecording() {
+    const ok = await this.dialogs.confirm({
+      title: "Arrêter l'enregistrement ?",
+      message: "Êtes-vous sûr de vouloir arrêter l'enregistrement ? Tout ce qui a été enregistré jusqu'ici sera sauvegardé. "
+        + "Le cours continue en direct : seul l'enregistrement s'arrête.",
+      icon: 'bi-stop-circle',
+      tone: 'danger',
+      confirmText: "Oui, arrêter l'enregistrement",
+      cancelText: 'Non, continuer'
+    });
+    if (!ok || !this.recording) return;
+    this.stopRecording(saved => this.announceSaved(saved));
+  }
+
+  /** Dit clairement au professeur ou à l'administrateur si le cours est enregistré, et où le retrouver. */
+  private announceSaved(saved: boolean, intro = ''): Promise<void> {
+    if (saved) {
+      return this.dialogs.alert({
+        title: 'Cours enregistré',
+        message: intro + "L'enregistrement du cours est sauvegardé dans la plateforme. "
+          + "Vous le retrouverez dans l'onglet « Passées » des Classes virtuelles, dès que la séance sera terminée.",
+        icon: 'bi-check-circle',
+        tone: 'success'
+      });
+    }
+    return this.dialogs.alert({
+      title: "Enregistrement non sauvegardé",
+      message: intro + (this.uploadError || "L'enregistrement n'a pas pu être envoyé à la plateforme.")
+        + " Ne fermez pas cette page et vérifiez votre connexion internet.",
+      icon: 'bi-exclamation-triangle',
+      tone: 'danger'
+    });
+  }
+
+  stopRecording(onStopped?: (saved: boolean) => void) {
     this.stopCallback = onStopped || null;
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-      // mediaRecorder.stop() est asynchrone : onstop (qui déclenche l'upload)
-      // ne se déclenche qu'après ce stop(). On attend donc onstop avant
-      // d'appeler le callback (ex: navigation après "Terminer la session").
+      // stop() est asynchrone : onstop (qui termine la sauvegarde) arrive après le dernier morceau
       this.mediaRecorder.stop();
     } else {
-      this.uploadRecording(this.stopCallback);
+      this.finishRecording();
     }
     this.displayStream?.getTracks().forEach(t => t.stop());
     this.micStream?.getTracks().forEach(t => t.stop());
@@ -649,40 +745,91 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     this.recording = false;
   }
 
-  private uploadRecording(onDone?: (() => void) | null) {
-    if (!this.vc || this.recordedChunks.length === 0) {
-      onDone?.();
+  /** Envoie les morceaux en attente, un à la fois et dans l'ordre ; réessaie après une coupure réseau. */
+  private sendChunks() {
+    if (this.chunkSending || !this.vc) return;
+    const next = this.chunkQueue[0];
+    if (!next || this.chunkFailed) {
+      this.chunkWaiters.splice(0).forEach(done => done());
       return;
     }
-    const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
-    const filename = `session-${this.vc.id}.webm`;
-
-    // Envoyé en fichier (plus de base64) : jusqu'à 600 Mo, soit plus de 6 heures à ce débit
-    if (blob.size > 600 * 1024 * 1024) {
-      const sizeMb = Math.round(blob.size / (1024 * 1024));
-      this.uploadError = `Enregistrement trop volumineux (${sizeMb} Mo, maximum 600 Mo). Faites des enregistrements plus courts.`;
-      onDone?.();
-      return;
-    }
-
-    this.uploading = true;
-    this.extractThumbnailFromBlob(blob).then(thumbnailBase64 => {
-      const body = new FormData();
-      body.append('file', blob, filename);
-      if (thumbnailBase64) body.append('thumbnail', thumbnailBase64);
-      this.http.post(`/api/teacher/virtual-classes/${this.vc!.id}/recording`, body).subscribe({
-        next: () => {
-          this.uploading = false;
-          this.uploadSuccess = true;
-          onDone?.();
-        },
-        error: () => {
-          this.uploading = false;
-          this.uploadError = "Erreur lors de l'envoi de l'enregistrement vers la plateforme.";
-          onDone?.();
+    this.chunkSending = true;
+    const body = new FormData();
+    body.append('file', next.blob, `session-${this.vc.id}-${next.seq}.webm`);
+    this.http.post(`/api/teacher/virtual-classes/${this.vc.id}/recording/chunk`, body, {
+      params: { seq: next.seq },
+      context: new HttpContext().set(SILENT_ERRORS, true)
+    }).subscribe({
+      next: () => {
+        this.chunkQueue.shift();
+        this.chunkSending = false;
+        this.lastSavedAt = new Date();
+        this.sendChunks();
+      },
+      error: (e) => {
+        this.chunkSending = false;
+        if (e?.status === 409 || e?.status === 403 || e?.status === 404) {
+          // Le serveur a perdu le fil : la vidéo complète sera envoyée à la fin
+          this.chunkFailed = true;
+          this.chunkQueue = [];
+          this.chunkWaiters.splice(0).forEach(done => done());
+        } else {
+          setTimeout(() => this.sendChunks(), 5000);
         }
-      });
+      }
     });
+  }
+
+  /** Attend que tous les morceaux soient envoyés ; false si ce n'est pas fait à temps. */
+  private waitForChunks(timeoutMs: number): Promise<boolean> {
+    if (this.chunkQueue.length === 0 && !this.chunkSending) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      this.chunkWaiters.push(() => { clearTimeout(timer); resolve(this.chunkQueue.length === 0); });
+    });
+  }
+
+  /** Fin de l'enregistrement : derniers morceaux, miniature ; la vidéo complète en secours si besoin. */
+  private async finishRecording() {
+    const done = (saved: boolean) => {
+      this.uploading = false;
+      this.uploadSuccess = saved;
+      const cb = this.stopCallback;
+      this.stopCallback = null;
+      cb?.(saved);
+    };
+    if (!this.vc || this.recordedChunks.length === 0) {
+      done(false);
+      return;
+    }
+    this.uploading = true;
+    this.uploadError = '';
+    const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+    const thumbnail = await this.extractThumbnailFromBlob(blob);
+    const allSent = !this.chunkFailed && await this.waitForChunks(60000);
+    try {
+      if (allSent && !this.chunkFailed) {
+        await firstValueFrom(this.http.post(`/api/teacher/virtual-classes/${this.vc.id}/recording/finish`,
+          { thumbnail }, { context: new HttpContext().set(SILENT_ERRORS, true) }));
+      } else {
+        // Secours : la vidéo complète, d'un seul envoi (jusqu'à 600 Mo)
+        if (blob.size > 600 * 1024 * 1024) {
+          this.uploadError = `Enregistrement trop volumineux (${Math.round(blob.size / (1024 * 1024))} Mo, maximum 600 Mo).`;
+          done(false);
+          return;
+        }
+        this.chunkQueue = [];
+        const body = new FormData();
+        body.append('file', blob, `session-${this.vc.id}.webm`);
+        if (thumbnail) body.append('thumbnail', thumbnail);
+        await firstValueFrom(this.http.post(`/api/teacher/virtual-classes/${this.vc.id}/recording`, body,
+          { context: new HttpContext().set(SILENT_ERRORS, true) }));
+      }
+      done(true);
+    } catch {
+      this.uploadError = "Erreur lors de l'envoi de l'enregistrement vers la plateforme.";
+      done(false);
+    }
   }
 
   private extractThumbnailFromBlob(blob: Blob): Promise<string> {
@@ -710,27 +857,86 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     });
   }
 
-  endSession() {
-    if (!this.vc) return;
-    const finish = () => {
-      this.ending = false;
-      if (this.isTeacher && this.vc!.status !== 'COMPLETED') {
-        this.http.put(`/api/teacher/virtual-classes/${this.vc!.id}/status`, {}, { params: { status: 'COMPLETED' } }).subscribe({
-          next: () => this.router.navigate(['/virtual-class']),
-          error: () => this.router.navigate(['/virtual-class'])
-        });
-      } else {
-        this.router.navigate(['/virtual-class']);
-      }
-    };
+  /** Fin prévue de la séance ; chrono 2 minutes avant, puis arrêt et sauvegarde automatiques (côté animateur). */
+  private startEndTimer() {
+    if (!this.vc || !this.isTeacher || !this.vc.durationMinutes) return;
+    const durationMs = this.vc.durationMinutes * 60 * 1000;
+    const scheduledEnd = new Date(this.vc.scheduledAt).getTime() + durationMs;
+    // Séance démarrée après son heure de fin prévue (retard, séance rouverte) : la durée compte depuis l'entrée
+    const key = `vc-room-entered-${this.vc.id}`;
+    let entered = Date.now();
+    try {
+      const stored = Number(sessionStorage.getItem(key));
+      if (stored > 0) entered = stored; else sessionStorage.setItem(key, String(entered));
+    } catch { /* stockage indisponible : l'entrée compte depuis maintenant */ }
+    this.endAt = scheduledEnd > entered ? scheduledEnd : entered + durationMs;
+    this.endTicker = setInterval(() => this.tickEnd(), 1000);
+    this.tickEnd();
+  }
 
+  private tickEnd() {
+    if (this.autoEnded || !this.vc) return;
+    const left = this.endAt - Date.now();
+    this.endCountdown = left <= VirtualClassRoomComponent.WARN_BEFORE_END_MS ? Math.ceil(Math.max(0, left) / 1000) : null;
+    if (left > 0 || this.ending) return;
+    this.autoEnded = true;
+    this.endCountdown = null;
+    if (this.endTicker) clearInterval(this.endTicker);
+    this.endSession(true);
+  }
+
+  /** « Terminer la session » : confirmation, sauvegarde de l'enregistrement, puis l'onglet « Passées ». */
+  async endSession(auto = false) {
+    if (!this.vc || this.ending) return;
+    const ok = auto || await this.dialogs.confirm({
+      title: 'Terminer la séance ?',
+      message: this.recording
+        ? "L'enregistrement en cours sera arrêté et sauvegardé, puis la séance sera fermée : "
+          + "le lien ne permettra plus d'entrer. Le cours enregistré sera dans l'onglet « Passées »."
+        : "La séance sera fermée pour tout le monde : le lien ne permettra plus d'entrer.",
+      icon: 'bi-box-arrow-right',
+      tone: 'warning',
+      confirmText: 'Oui, terminer la séance',
+      cancelText: 'Non, continuer le cours'
+    });
+    if (!ok) return;
+    this.ending = true;
+
+    let saved = this.uploadSuccess;
     if (this.recording) {
-      // On attend que l'enregistrement soit arrêté ET envoyé au serveur
-      // avant de quitter la page, sinon le cours enregistré est perdu.
-      this.ending = true;
-      this.stopRecording(finish);
-    } else {
-      finish();
+      // On attend que l'enregistrement soit arrêté ET sauvegardé avant de quitter la page
+      saved = await new Promise<boolean>(resolve => this.stopRecording(resolve));
+      if (!saved) {
+        this.ending = false;
+        await this.announceSaved(false);
+        return;
+      }
     }
+
+    if (this.isTeacher && this.vc.status !== 'COMPLETED') {
+      try {
+        await firstValueFrom(this.http.put(`/api/teacher/virtual-classes/${this.vc.id}/status`, {}, { params: { status: 'COMPLETED' } }));
+      } catch { /* la page des classes affichera l'état réel */ }
+    }
+    this.ending = false;
+    try { sessionStorage.removeItem(`vc-room-entered-${this.vc.id}`); } catch { /* sans effet */ }
+    const reason = auto ? `La durée prévue (${this.vc.durationMinutes} min) est atteinte. ` : '';
+    await this.dialogs.alert(saved
+      ? {
+          title: auto ? 'Durée atteinte — cours enregistré' : 'Séance terminée — cours enregistré',
+          message: reason + "La séance est terminée et son enregistrement est sauvegardé. "
+            + "Vous allez le trouver dans l'onglet « Passées » des Classes virtuelles.",
+          icon: 'bi-check-circle',
+          tone: 'success',
+          confirmText: "Voir l'onglet Passées"
+        }
+      : {
+          title: auto ? 'Durée atteinte — séance terminée' : 'Séance terminée',
+          message: reason + "La séance est terminée. Elle n'a pas été enregistrée ; vous la retrouverez dans l'onglet « Passées ».",
+          icon: 'bi-info-circle',
+          tone: 'info',
+          confirmText: "Voir l'onglet Passées"
+        });
+    this.router.navigate(['/virtual-class'], { queryParams: { tab: 'past' } });
   }
 }

@@ -213,6 +213,11 @@ interface InviteFailure { email: string; name: string; reason: string; }
                   <i class="bi bi-archive me-2"></i>Session terminée (sans enregistrement)
                 </button>
               </div>
+              <!-- Séance terminée trop tôt : on la rouvre, le lien déjà partagé redevient utilisable -->
+              <button *ngIf="vc.status === 'COMPLETED' && canSeeAttendance(vc)"
+                      class="btn btn-outline-primary w-100 mt-2" (click)="reopenSession(vc)">
+                <i class="bi bi-arrow-counterclockwise me-2"></i>Rouvrir la séance (même lien)
+              </button>
               <button *ngIf="canSeeAttendance(vc) && vc.status !== 'COMPLETED' && vc.status !== 'CANCELLED'"
                       class="btn btn-outline-secondary w-100 mt-2" (click)="openInvites(vc)">
                 <i class="bi bi-link-45deg me-2"></i>Lien de la séance
@@ -703,6 +708,18 @@ export class VirtualClassComponent implements OnInit {
       next: () => { vc.status = 'ONGOING'; this.joinRoom(vc.id); },
       error: () => { this.joinRoom(vc.id); }
     });
+  }
+
+  /** Remet en direct une séance terminée : le même lien fonctionne de nouveau pour tous. */
+  async reopenSession(vc: VirtualClass) {
+    const ok = await this.dialogs.confirm({
+      title: 'Rouvrir « ' + vc.title + ' » ?',
+      message: 'La séance repasse en direct et le même lien fonctionne de nouveau pour le professeur et les étudiants.'
+        + (vc.hasRecording ? ' Attention : un nouvel enregistrement remplacera la vidéo actuelle.' : ''),
+      icon: 'bi-arrow-counterclockwise',
+      confirmText: 'Rouvrir'
+    });
+    if (ok) this.startSession(vc);
   }
 
   openCreate() {

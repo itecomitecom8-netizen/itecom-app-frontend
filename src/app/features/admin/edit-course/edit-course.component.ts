@@ -142,7 +142,10 @@ export class EditCourseComponent implements OnInit {
     ).subscribe({
       next: () => {
         this.saving = false; this.success = true;
-        if (this.dialogRef) { this.dialogs.toast('Cours mis à jour'); this.dialogRef.close(true); }
+        if (this.dialogRef) {
+          this.dialogs.success('Cours mis à jour', `Les modifications de « ${title} » sont enregistrées.`);
+          this.dialogRef.close(true);
+        }
         else setTimeout(() => this.router.navigate(['/teacher/courses']), 1500);
       },
       error: (err) => { this.error = err.error?.message || err.message || 'Erreur'; this.saving = false; }

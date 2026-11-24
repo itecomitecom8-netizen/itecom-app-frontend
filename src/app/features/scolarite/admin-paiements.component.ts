@@ -141,7 +141,7 @@ export class AdminPaiementsComponent implements OnInit {
     const changed = this.feeRows.filter(r => r.dirty);
     const incomplete = changed.find(r => r.registrationFee === null || r.monthlyFee === null || r.registrationFee < 0 || r.monthlyFee < 0);
     if (incomplete) {
-      this.dialogs.toast(`${incomplete.level} : saisissez l'inscription et la mensualité (montants positifs).`, 'danger');
+      this.dialogs.alert({ title: 'Montants incomplets', message: `${incomplete.level} : saisissez l'inscription et la mensualité (montants positifs).`, icon: 'bi-exclamation-triangle', tone: 'warning' });
       return;
     }
     this.busy = true;
@@ -150,12 +150,12 @@ export class AdminPaiementsComponent implements OnInit {
     const done = () => {
       if (--remaining > 0) return;
       this.busy = false;
-      if (!failed) this.dialogs.toast('Montants enregistrés.');
+      if (!failed) this.dialogs.success('Montants enregistrés', "Les frais d'inscription et les mensualités sont à jour.");
     };
     for (const r of changed) {
       this.school.saveFee({ academicYear: this.year, level: r.level, registrationFee: r.registrationFee!, monthlyFee: r.monthlyFee! }).subscribe({
         next: () => { r.dirty = false; r.saved = true; done(); },
-        error: err => { failed = true; this.dialogs.toast(`${r.level} : ${apiError(err)}`, 'danger', 6000); done(); }
+        error: err => { failed = true; done(); }
       });
     }
   }
@@ -168,11 +168,15 @@ export class AdminPaiementsComponent implements OnInit {
     if (this.status !== 'PENDING') this.school.payments('PENDING').subscribe(p => this.pendingCount = p.length);
   }
 
-  validate(p: Payment) {
+  async validate(p: Payment) {
+    const ok = await this.dialogs.confirm({ title: 'Valider ce paiement ?',
+      message: `${p.studentName} — ${fcfa(p.amount)} (réf. ${p.transactionRef}). Vérifiez que la somme a bien été reçue : un reçu sera généré et envoyé à l'étudiant.`,
+      icon: 'bi-check2-circle', tone: 'success', confirmText: 'Oui, valider le paiement' });
+    if (!ok) return;
     this.busy = true;
     this.school.validatePayment(p.id).subscribe({
-      next: v => { this.busy = false; this.dialogs.toast(`Paiement validé — reçu ${v.receiptNumber}`); this.loadPayments(); },
-      error: err => { this.busy = false; this.dialogs.toast(apiError(err), 'danger', 6000); }
+      next: v => { this.busy = false; this.dialogs.success('Paiement validé', `Le paiement de ${p.studentName} est validé. Reçu n° ${v.receiptNumber} généré et envoyé à l'étudiant.`); this.loadPayments(); },
+      error: err => { this.busy = false; /* raison affichée en popup par l'intercepteur d'erreurs */; }
     });
   }
 
@@ -182,8 +186,8 @@ export class AdminPaiementsComponent implements OnInit {
     if (reason === null) return;
     this.busy = true;
     this.school.rejectPayment(p.id, reason).subscribe({
-      next: () => { this.busy = false; this.dialogs.toast('Paiement refusé, étudiant notifié.', 'info'); this.loadPayments(); },
-      error: err => { this.busy = false; this.dialogs.toast(apiError(err), 'danger', 6000); }
+      next: () => { this.busy = false; this.dialogs.success('Paiement refusé', `${p.studentName} a été prévenu du refus et du motif.`); this.loadPayments(); },
+      error: err => { this.busy = false; /* raison affichée en popup par l'intercepteur d'erreurs */; }
     });
   }
 

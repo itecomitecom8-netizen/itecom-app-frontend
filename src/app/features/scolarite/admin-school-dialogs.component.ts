@@ -248,7 +248,7 @@ export class EnrollmentDialogComponent implements OnInit {
     this.savingFee = true;
     this.error = '';
     this.school.saveFee({ academicYear: this.year, level: this.level, registrationFee, monthlyFee }).subscribe({
-      next: f => { this.savingFee = false; this.fees = [...this.fees.filter(x => x.id !== f.id), f]; this.dialogs.toast(`Montants ${f.level} enregistrés.`); },
+      next: f => { this.savingFee = false; this.fees = [...this.fees.filter(x => x.id !== f.id), f]; this.dialogs.success('Montants enregistrés', `Les frais de ${f.level} sont à jour.`); },
       error: err => { this.savingFee = false; this.error = apiError(err); }
     });
   }
@@ -338,7 +338,7 @@ export class EnrollmentDialogComponent implements OnInit {
         this.saving = false;
         this.created += r.created;
         this.levelErrors = r.errors;
-        this.dialogs.toast(`${r.created} étudiant(s) réinscrit(s) en ${this.level}`, r.created ? 'success' : 'info');
+        this.dialogs.success(r.created ? 'Réinscriptions faites' : 'Aucune réinscription', `${r.created} étudiant(s) réinscrit(s) en ${this.level}.`);
         if (!r.errors.length) this.ref.close(true);
       },
       error: err => { this.saving = false; this.error = apiError(err); }
@@ -530,8 +530,8 @@ export class EnrollmentFileDialogComponent implements OnInit {
   private run(obs: any, success: string) {
     this.busy = true;
     obs.subscribe({
-      next: () => { this.busy = false; this.changed = true; this.dialogs.toast(success); this.load(); },
-      error: (err: any) => { this.busy = false; this.dialogs.toast(apiError(err), 'danger', 6000); }
+      next: () => { this.busy = false; this.changed = true; this.dialogs.success('Action effectuée', success); this.load(); },
+      error: (err: any) => { this.busy = false; /* raison affichée en popup par l'intercepteur d'erreurs */; }
     });
   }
 
@@ -558,8 +558,8 @@ export class EnrollmentFileDialogComponent implements OnInit {
     if (!await this.dialogs.confirmDelete('cette inscription')) return;
     this.busy = true;
     this.school.deleteEnrollment(this.data.id).subscribe({
-      next: () => { this.dialogs.toast('Inscription supprimée.'); this.ref.close(true); },
-      error: err => { this.busy = false; this.dialogs.toast(apiError(err), 'danger', 6000); }
+      next: () => { this.dialogs.success('Inscription supprimée', "L'inscription a été supprimée."); this.ref.close(true); },
+      error: err => { this.busy = false; /* raison affichée en popup par l'intercepteur d'erreurs */; }
     });
   }
 }

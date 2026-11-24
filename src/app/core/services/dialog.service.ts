@@ -93,6 +93,11 @@ export class DialogService {
     return ref.afterClosed.then(() => undefined);
   }
 
+  /** Action réussie : popup claire (plus visible qu'un toast) qui dit ce qui a été fait et ce qui suit. */
+  success(title: string, message?: string): Promise<void> {
+    return this.alert({ title, message, icon: 'bi-check-circle', tone: 'success' });
+  }
+
   prompt(options: PromptOptions): Promise<string | null> {
     const ref = this.push('prompt', { tone: 'primary', confirmText: 'Valider', cancelText: 'Annuler', ...options }, options.value ?? '');
     return ref.afterClosed.then(r => (typeof r === 'string' ? r : null));

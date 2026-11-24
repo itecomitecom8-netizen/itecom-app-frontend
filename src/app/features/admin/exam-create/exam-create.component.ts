@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { ExamService } from '../../../core/services/exam.service';
+import { DialogService } from '../../../core/services/dialog.service';
 import { ExamQuestionForm } from '../../../core/models/exam.model';
 import { StudentPickerComponent, PickedStudent, studentsCsv } from '../../../shared/components/student-picker.component';
 
@@ -181,7 +182,7 @@ export class ExamCreateComponent {
   students: PickedStudent[] = [];
   targetLevels = new Set<string>();
 
-  constructor(private examService: ExamService, private router: Router) {}
+  constructor(private examService: ExamService, private router: Router, private dialogs: DialogService) {}
 
   get totalScore(): number { return this.questions.reduce((s, q) => s + (q.maxScore || 0), 0); }
 
@@ -218,7 +219,12 @@ export class ExamCreateComponent {
       examFile,
       correctionFile
     ).subscribe({
-      next: () => { this.success = true; setTimeout(() => this.router.navigate(['/teacher/exams']), 1500); },
+      next: async () => {
+        this.success = true;
+        await this.dialogs.success('Examen créé', `« ${this.title} » est créé en brouillon. `
+          + "Publiez-le depuis la liste des examens pour envoyer l'invitation aux étudiants.");
+        this.router.navigate(['/teacher/exams']);
+      },
       error: e => { this.error = e?.error?.message || 'Erreur lors de la création'; this.loading = false; }
     });
   }

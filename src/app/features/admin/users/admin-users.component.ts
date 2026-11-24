@@ -336,7 +336,7 @@ export class AdminUsersComponent implements OnInit {
           this.students = [user, ...this.students.filter(s => s.id !== user.id)];
           this.setTab('students');
         }
-        if (res.emailSent) this.dialogs.toast(res.message);
+        if (res.emailSent) this.dialogs.success('Compte créé', res.message);
         else this.dialogs.alert({ title: 'Compte créé', message: res.message, icon: 'bi-envelope-exclamation', tone: 'warning' });
       });
   }
@@ -350,7 +350,7 @@ export class AdminUsersComponent implements OnInit {
       if (!updated) return;
       const replace = (list: AppUser[]) => list.map(x => x.id === updated.id ? updated : x);
       if (teacher) this.teachers = replace(this.teachers); else this.students = replace(this.students);
-      this.dialogs.toast('Compte modifié');
+      this.dialogs.success('Compte modifié', 'Les modifications du compte sont enregistrées.');
     });
   }
 
@@ -364,13 +364,10 @@ export class AdminUsersComponent implements OnInit {
         this.processing[u.id] = false;
         this.students = this.students.filter(x => x.id !== u.id);
         this.teachers = this.teachers.filter(x => x.id !== u.id);
-        this.dialogs.toast('Compte supprimé');
+        this.dialogs.success('Compte supprimé', `Le compte de ${u.firstName} ${u.lastName} a été supprimé.`);
       },
-      error: err => {
-        this.processing[u.id] = false;
-        this.dialogs.alert({ title: 'Suppression impossible', message: err.error?.message || 'Action impossible pour le moment.',
-          icon: 'bi-exclamation-triangle', tone: 'warning' });
-      }
+      // La raison (ex. compte avec historique) est affichée en popup par l'intercepteur d'erreurs
+      error: () => { this.processing[u.id] = false; }
     });
   }
 
@@ -394,16 +391,13 @@ export class AdminUsersComponent implements OnInit {
         u.registrationStatus = 'APPROVED';
         u.enabled = true;
         if (r.emailSent) {
-          this.dialogs.toast(r.message);
+          this.dialogs.success('Compte créé', r.message);
         } else {
           this.dialogs.alert({ title: 'Compte créé', icon: 'bi-exclamation-triangle', tone: 'warning',
             message: `${r.message}\nIdentifiant : ${u.email} — mot de passe : ${r.password}` });
         }
       },
-      error: err => {
-        this.processing[u.id] = false;
-        this.dialogs.toast(err.error?.message || 'Action impossible pour le moment.', 'danger');
-      }
+      error: () => { this.processing[u.id] = false; }
     });
   }
 
@@ -415,6 +409,13 @@ export class AdminUsersComponent implements OnInit {
         icon: 'bi-person-slash', tone: 'danger', confirmText: 'Désactiver'
       });
       if (!ok) return;
+    } else {
+      const ok = await this.dialogs.confirm({
+        title: `Réactiver le compte de ${u.firstName} ${u.lastName} ?`,
+        message: 'La personne pourra de nouveau se connecter avec son mot de passe actuel.',
+        icon: 'bi-person-check', tone: 'success', confirmText: 'Oui, réactiver'
+      });
+      if (!ok) return;
     }
     this.processing[u.id] = true;
     const action = u.enabled ? 'disable' : 'enable';
@@ -422,9 +423,9 @@ export class AdminUsersComponent implements OnInit {
       next: () => {
         u.enabled = !u.enabled;
         this.processing[u.id] = false;
-        this.dialogs.toast(u.enabled ? 'Compte réactivé' : 'Compte désactivé', u.enabled ? 'success' : 'info');
+        this.dialogs.success(u.enabled ? 'Compte réactivé' : 'Compte désactivé', u.enabled ? `${u.firstName} ${u.lastName} peut de nouveau se connecter.` : `${u.firstName} ${u.lastName} ne peut plus se connecter. Vous pouvez réactiver le compte à tout moment.`);
       },
-      error: () => { this.processing[u.id] = false; this.dialogs.toast('Action impossible pour le moment.', 'danger'); }
+      error: () => { this.processing[u.id] = false; }
     });
   }
 

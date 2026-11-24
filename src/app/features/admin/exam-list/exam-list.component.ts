@@ -188,15 +188,18 @@ export class ExamListComponent implements OnInit {
   // ── Actions examens ──────────────────────────────────────────────────────
   async publishExam(exam: Exam) {
     if (!(await this.dialogs.confirm({ title: `Publier « ${exam.title} » ?`, message: 'Les étudiants recevront leur invitation.', icon: 'bi-send', confirmText: 'Publier' }))) return;
-    this.examService.publishExam(exam.id).subscribe({ next: r => { const i = this.exams.findIndex(e => e.id === exam.id); if (i >= 0) this.exams[i] = r.data; } });
+    this.examService.publishExam(exam.id).subscribe({ next: r => { const i = this.exams.findIndex(e => e.id === exam.id); if (i >= 0) this.exams[i] = r.data;
+      this.dialogs.success('Examen publié', `« ${exam.title} » est publié : les étudiants ont reçu leur invitation.`); } });
   }
   async closeExam(exam: Exam) {
     if (!(await this.dialogs.confirm({ title: `Clôturer « ${exam.title} » ?`, message: 'Plus aucune copie ne pourra être rendue.', icon: 'bi-lock', tone: 'warning', confirmText: 'Clôturer' }))) return;
-    this.examService.closeExam(exam.id).subscribe({ next: r => { const i = this.exams.findIndex(e => e.id === exam.id); if (i >= 0) this.exams[i] = r.data; } });
+    this.examService.closeExam(exam.id).subscribe({ next: r => { const i = this.exams.findIndex(e => e.id === exam.id); if (i >= 0) this.exams[i] = r.data;
+      this.dialogs.success('Examen clôturé', `« ${exam.title} » est clôturé : plus aucune copie ne peut être rendue. Le rapport reste téléchargeable.`); } });
   }
   async deleteExam(exam: Exam) {
     if (!(await this.dialogs.confirmDelete(`l'examen « ${exam.title} »`))) return;
-    this.examService.deleteExam(exam.id).subscribe({ next: () => this.exams = this.exams.filter(e => e.id !== exam.id) });
+    this.examService.deleteExam(exam.id).subscribe({ next: () => { this.exams = this.exams.filter(e => e.id !== exam.id);
+      this.dialogs.success('Examen supprimé', `« ${exam.title} » a été supprimé.`); } });
   }
   downloadReport(exam: Exam) {
     const obs = this.authService.isAdmin ? this.examService.downloadAdminReport(exam.id) : this.examService.downloadReport(exam.id);
@@ -204,15 +207,23 @@ export class ExamListComponent implements OnInit {
   }
 
   // ── Actions QCMs ─────────────────────────────────────────────────────────
-  publishQcm(q: Qcm) {
-    this.http.post(`/api/teacher/qcms/${q.id}/publish`, {}).subscribe(() => q.status = 'PUBLISHED');
+  async publishQcm(q: Qcm) {
+    if (!(await this.dialogs.confirm({ title: `Publier le devoir « ${q.title} » ?`,
+      message: 'Les étudiants concernés pourront le voir et le faire.', icon: 'bi-send', confirmText: 'Oui, publier' }))) return;
+    this.http.post(`/api/teacher/qcms/${q.id}/publish`, {}).subscribe(() => { q.status = 'PUBLISHED';
+      this.dialogs.success('Devoir publié', `« ${q.title} » est maintenant visible par les étudiants.`); });
   }
-  unpublishQcm(q: Qcm) {
-    this.http.post(`/api/teacher/qcms/${q.id}/unpublish`, {}).subscribe(() => q.status = 'DRAFT');
+  async unpublishQcm(q: Qcm) {
+    if (!(await this.dialogs.confirm({ title: `Retirer le devoir « ${q.title} » ?`,
+      message: "Il redevient un brouillon : les étudiants ne le verront plus jusqu'à sa prochaine publication.",
+      icon: 'bi-eye-slash', tone: 'warning', confirmText: 'Oui, retirer' }))) return;
+    this.http.post(`/api/teacher/qcms/${q.id}/unpublish`, {}).subscribe(() => { q.status = 'DRAFT';
+      this.dialogs.success('Devoir retiré', `« ${q.title} » est repassé en brouillon.`); });
   }
   async deleteQcm(q: Qcm) {
     if (!(await this.dialogs.confirmDelete(`le devoir « ${q.title} »`))) return;
-    this.http.delete(`/api/teacher/qcms/${q.id}`).subscribe(() => this.qcms = this.qcms.filter(x => x.id !== q.id));
+    this.http.delete(`/api/teacher/qcms/${q.id}`).subscribe(() => { this.qcms = this.qcms.filter(x => x.id !== q.id);
+      this.dialogs.success('Devoir supprimé', `« ${q.title} » a été supprimé.`); });
   }
 
   getStatusClass(s: string) { return { DRAFT: 'status-draft', PUBLISHED: 'status-published', CLOSED: 'status-closed' }[s] || 'status-draft'; }
