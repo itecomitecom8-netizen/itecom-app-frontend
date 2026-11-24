@@ -5,7 +5,7 @@ import { pickVideoUrl } from '../../core/utils/video-quality';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, firstValueFrom } from 'rxjs';
 import { DialogService } from '../../core/services/dialog.service';
 import { AuthService } from '../../core/services/auth.service';
 import { StudentPickerComponent, PickedStudent, studentsCsv, toPickedStudent } from '../../shared/components/student-picker.component';
@@ -303,6 +303,34 @@ interface InviteFailure { email: string; name: string; reason: string; }
                 <app-student-picker [students]="newStudents" [targetLevels]="newLevels" [allowGuests]="true"></app-student-picker>
                 <div class="form-text">La séance s'affiche aussi dans leur espace « Classes virtuelles ».</div>
               </div>
+
+              <!-- Classes simultanées : même date, même durée, un autre cours et un autre professeur -->
+              <div *ngFor="let p of parallelClasses; let i = index" class="border rounded-3 p-3 mb-3 bg-light">
+                <div class="d-flex align-items-center mb-2">
+                  <strong class="flex-grow-1"><i class="bi bi-collection-play me-1"></i>Classe simultanée n° {{ i + 2 }}</strong>
+                  <button type="button" class="btn btn-sm btn-outline-danger" (click)="removeParallel(i)">
+                    <i class="bi bi-x-lg me-1"></i>Retirer
+                  </button>
+                </div>
+                <div class="form-text mb-2">Même date et même durée que la première classe ; son propre lien sera créé.</div>
+                <div class="mb-2">
+                  <label class="form-label fw-semibold small">Titre du cours *</label>
+                  <input type="text" class="form-control" [(ngModel)]="p.title" placeholder="Ex : Droit public">
+                </div>
+                <div class="mb-2">
+                  <label class="form-label fw-semibold small">Professeur *</label>
+                  <select class="form-select" [(ngModel)]="p.teacherId">
+                    <option [ngValue]="null" disabled>Choisir le professeur de ce cours</option>
+                    <option *ngFor="let t of teachers" [ngValue]="t.id">{{ t.firstName }} {{ t.lastName }} · {{ t.email }}</option>
+                  </select>
+                </div>
+                <label class="form-label fw-semibold small">Étudiants de ce cours <span class="fw-normal text-muted">(facultatif)</span></label>
+                <app-student-picker [students]="p.students" [targetLevels]="p.levels" [allowGuests]="true"></app-student-picker>
+              </div>
+              <button type="button" class="btn btn-outline-primary w-100 mb-3" (click)="addParallel()">
+                <i class="bi bi-plus-circle me-1"></i>Ajouter une classe simultanée (autre cours, autre professeur, même horaire)
+              </button>
+
               <div *ngIf="createError" class="alert alert-danger py-2 mb-3 small">{{ createError }}</div>
               <div class="alert alert-info small mb-0">
                 <i class="bi bi-info-circle me-1"></i>
@@ -312,8 +340,10 @@ interface InviteFailure { email: string; name: string; reason: string; }
             </div>
             <div class="modal-footer border-0 p-4 pt-0">
               <button class="btn btn-outline-secondary" (click)="showCreateModal = false">Annuler</button>
-              <button class="btn btn-primary-custom" (click)="createClass()">
-                <i class="bi bi-check-circle me-2"></i>Créer la session
+              <button class="btn btn-primary-custom" (click)="createClass()" [disabled]="creating">
+                <span *ngIf="creating" class="spinner-border spinner-border-sm me-2"></span>
+                <i *ngIf="!creating" class="bi bi-check-circle me-2"></i>
+                {{ parallelClasses.length ? 'Créer les ' + (parallelClasses.length + 1) + ' classes' : 'Créer la session' }}
               </button>
             </div>
           </div>
@@ -455,6 +485,15 @@ export class VirtualClassComponent implements OnInit {
   newStudents: PickedStudent[] = [];
   newLevels = new Set<string>();
   newTeacherId: number | null = null;
+  /** Autres cours au même horaire, chacun avec son professeur, ses étudiants et son lien. */
+  parallelClasses: { title: string; teacherId: number | null; students: PickedStudent[]; levels: Set<string> }[] = [];
+  creating = false;
+
+  addParallel() {
+    this.parallelClasses.push({ title: '', teacherId: null, students: [], levels: new Set<string>() });
+  }
+
+  removeParallel(i: number) { this.parallelClasses.splice(i, 1); }
   teachers: { id: number; firstName: string; lastName: string; email: string }[] = [];
   teachersLoaded = false;
   createError = '';
@@ -735,30 +774,87 @@ export class VirtualClassComponent implements OnInit {
     });
   }
 
-  createClass() {
+  async createClass() {
+    if (this.creating) return;
+    if (!this.newClass.title?.trim()) { this.createError = 'Saisissez le titre du cours.'; return; }
+    if (!this.newClass.scheduledAt) { this.createError = "Choisissez la date et l'heure de la séance."; return; }
+    if (!(this.newClass.durationMinutes > 0)) { this.createError = 'Saisissez une durée en minutes.'; return; }
     if (!this.newTeacherId) {
       this.createError = 'Choisissez le professeur qui anime la séance.';
       return;
     }
-    const formData = new FormData();
-    const data = { ...this.newClass, targetLevels: [...this.newLevels].join(',') };
-    formData.append('class', new Blob([JSON.stringify(data)], { type: 'application/json' }));
-    if (this.newStudents.length) formData.append('studentList', studentsCsv(this.newStudents));
-    formData.append('teacherId', String(this.newTeacherId));
-    this.http.post<VirtualClass>('/api/teacher/virtual-classes', formData).subscribe({
-      next: (vc) => {
+    const all = [
+      { title: this.newClass.title, description: this.newClass.description, teacherId: this.newTeacherId,
+        students: this.newStudents, levels: this.newLevels },
+      ...this.parallelClasses.map(p => ({ title: p.title, description: '', teacherId: p.teacherId, students: p.students, levels: p.levels }))
+    ];
+    const incomplete = all.findIndex(c => !c.title?.trim() || !c.teacherId);
+    if (incomplete >= 0) {
+      this.createError = `Classe simultanée n° ${incomplete + 1} : saisissez le titre du cours et choisissez son professeur.`;
+      return;
+    }
+    // Un professeur ne peut pas animer deux cours en même temps
+    const ids = all.map(c => c.teacherId);
+    if (new Set(ids).size !== ids.length) {
+      this.createError = 'Le même professeur est choisi pour deux classes au même horaire : choisissez un professeur différent pour chaque cours.';
+      return;
+    }
+
+    if (all.length > 1) {
+      const name = (id: number | null) => { const t = this.teachers.find(x => x.id === id); return t ? `${t.firstName} ${t.lastName}` : 'Professeur'; };
+      const ok = await this.dialogs.confirm({
+        title: `Créer ${all.length} classes simultanées ?`,
+        message: all.map(c => `• ${c.title} — ${name(c.teacherId)}`).join('\n')
+          + `\n\nMême horaire (${new Date(this.newClass.scheduledAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}), `
+          + `même durée (${this.newClass.durationMinutes} min). Chaque classe aura son propre lien.`,
+        icon: 'bi-collection-play', confirmText: `Oui, créer les ${all.length} classes`
+      });
+      if (!ok) return;
+    }
+
+    this.creating = true;
+    this.createError = '';
+    const created: VirtualClass[] = [];
+    for (const c of all) {
+      const formData = new FormData();
+      const data = { title: c.title.trim(), description: c.description, scheduledAt: this.newClass.scheduledAt,
+        durationMinutes: this.newClass.durationMinutes, targetLevels: [...c.levels].join(',') };
+      formData.append('class', new Blob([JSON.stringify(data)], { type: 'application/json' }));
+      if (c.students.length) formData.append('studentList', studentsCsv(c.students));
+      formData.append('teacherId', String(c.teacherId));
+      try {
+        const vc = await firstValueFrom(this.http.post<VirtualClass>('/api/teacher/virtual-classes', formData));
+        created.push(vc);
         this.classes.unshift(vc);
-        this.showCreateModal = false;
-        this.newClass = { title: '', description: '', scheduledAt: '', durationMinutes: 60 };
-        this.newStudents = [];
-        this.newLevels = new Set();
-        this.newTeacherId = null;
-        this.createError = '';
-        // Le lien unique à envoyer au professeur et aux étudiants
-        this.openInvites(vc);
-      },
-      error: (e) => { this.createError = e.error?.message || 'Impossible de créer la session. Vérifiez les informations et la liste des étudiants.'; }
-    });
+      } catch (e: any) {
+        this.creating = false;
+        this.createError = `« ${c.title} » n'a pas été créée : ${e?.error?.message || 'vérifiez les informations et la liste des étudiants.'}`
+          + (created.length ? ` Déjà créée(s) : ${created.map(v => v.title).join(', ')}.` : '');
+        // Les classes déjà créées sont retirées du formulaire : « Créer » reprend là où l'envoi s'est arrêté
+        const [first, ...rest] = all.slice(created.length);
+        this.newClass.title = first.title; this.newClass.description = first.description;
+        this.newTeacherId = first.teacherId; this.newStudents = first.students; this.newLevels = first.levels;
+        this.parallelClasses = rest.map(r => ({ title: r.title, teacherId: r.teacherId, students: r.students, levels: r.levels }));
+        return;
+      }
+    }
+
+    this.creating = false;
+    this.showCreateModal = false;
+    this.newClass = { title: '', description: '', scheduledAt: '', durationMinutes: 60 };
+    this.newStudents = [];
+    this.newLevels = new Set();
+    this.newTeacherId = null;
+    this.parallelClasses = [];
+    this.createError = '';
+    if (created.length === 1) {
+      // Le lien unique à envoyer au professeur et aux étudiants
+      this.openInvites(created[0]);
+      return;
+    }
+    await this.dialogs.success(`${created.length} classes simultanées créées`,
+      created.map(v => `• ${v.title} — ${v.teacherName || 'Professeur'}`).join('\n')
+      + "\n\nChaque classe a son propre lien : ouvrez « Lien de la séance » sur sa carte pour l'envoyer à son professeur et à ses étudiants.");
   }
 
   // --- Invitations sans compte ---
