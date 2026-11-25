@@ -6,7 +6,7 @@ import { SILENT_ERRORS } from '../../core/interceptors/error.interceptor';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/services/auth.service';
 import { DialogService } from '../../core/services/dialog.service';
-import { checkMicrophone } from './microphone-check';
+import { checkMicrophone, explainMicError, loadJitsiScript, RESILIENT_JITSI_CONFIG, ScreenWakeLock } from './microphone-check';
 
 declare const JitsiMeetExternalAPI: any;
 
@@ -173,7 +173,15 @@ interface JitsiTokenResponse {
           <i class="bi bi-exclamation-circle me-2"></i>{{ uploadError }}
         </div>
 
-        <div *ngIf="!joined" class="alert alert-info d-flex flex-wrap align-items-center gap-2">
+        <div *ngIf="offline" class="alert alert-danger d-flex gap-2" role="alert">
+          <i class="bi bi-wifi-off"></i>
+          <span>Connexion internet perdue. Restez sur cette page : la visio se reconnecte automatiquement dès le retour du réseau.</span>
+        </div>
+        <div *ngIf="joined && micMuted && !isTeacher" class="alert alert-secondary small py-2 d-flex gap-2" role="status">
+          <i class="bi bi-mic-mute-fill text-danger"></i>
+          <span>Votre micro est coupé. Pour parler, touchez le bouton <strong>micro</strong> en bas de la vidéo.</span>
+        </div>
+        <div *ngIf="!joined && !offline" class="alert alert-info d-flex flex-wrap align-items-center gap-2">
           <i class="bi bi-info-circle me-2"></i>
           <span class="flex-grow-1">
             Si une fenêtre <strong>"Rejoindre la réunion" / "Join Meeting"</strong> s'affiche dans la vidéo ci-dessous
@@ -230,6 +238,11 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
   debugLog: string[] = [];
   joined = false;
   showReload = false;
+  offline = !navigator.onLine;
+  micMuted = false;
+  private autoReconnects = 0;
+  private micErrorShown = false;
+  private readonly wakeLock = new ScreenWakeLock();
   ending = false;
 
   private joinTimeoutHandle: any;
@@ -323,7 +336,19 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     }
   }
 
+  @HostListener('window:offline')
+  onOffline() { this.offline = true; this.log('Connexion internet perdue'); }
+
+  /** Réseau revenu : si la visio n'a pas tenu le coup, on la relance sans que personne ait à cliquer. */
+  @HostListener('window:online')
+  onOnline() {
+    this.offline = false;
+    this.log('Connexion internet rétablie');
+    if (this.vc && !this.joined) this.reloadConference();
+  }
+
   ngOnDestroy() {
+    this.wakeLock.stop();
     if (this.endTicker) clearInterval(this.endTicker);
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       this.mediaRecorder.stop();
@@ -503,21 +528,6 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     setTimeout(() => this.initJitsi(), 100);
   }
 
-  private loadJitsiScript(domain: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (typeof JitsiMeetExternalAPI !== 'undefined') {
-        resolve();
-        return;
-      }
-      const script = document.createElement('script');
-      script.src = `https://${domain}/external_api.js`;
-      script.async = true;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error('Impossible de charger Jitsi Meet'));
-      document.body.appendChild(script);
-    });
-  }
-
   private micChecked = false;
 
   private async initJitsi() {
@@ -533,7 +543,7 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         this.http.get<JitsiTokenResponse>(`/api/virtual-classes/${this.vc.id}/jitsi-token`)
       );
       this.log('Jeton obtenu. Chargement de Jitsi...');
-      await this.loadJitsiScript(jitsi.domain);
+      await loadJitsiScript(jitsi.domain);
       this.log('Script chargé. Création de la salle "' + jitsi.roomName + '"...');
       const user = this.authService.currentUser;
       this.jitsiApi = new JitsiMeetExternalAPI(jitsi.domain, {
@@ -546,20 +556,13 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
           displayName: jitsi.displayName || (user ? `${user.firstName} ${user.lastName}` : 'Utilisateur')
         },
         configOverwrite: {
-          prejoinPageEnabled: false,
+          ...RESILIENT_JITSI_CONFIG,
           // Professeur en HD (720p) ; étudiants en 360p pour que leur son passe même sur une petite connexion.
           // Le partage d'écran reste net (réglé à part).
           resolution: this.isTeacher ? 720 : 360,
           constraints: { video: this.isTeacher
             ? { height: { ideal: 720, max: 720, min: 240 } }
-            : { height: { ideal: 360, max: 360, min: 180 } } },
-          desktopSharingFrameRate: { min: 5, max: 15 },
-          prejoinConfig: { enabled: false },
-          requireDisplayName: false,
-          lobby: { enabled: false },
-          hideLobbyButton: true,
-          enableLobbyChat: false,
-          disableDeepLinking: true
+            : { height: { ideal: 360, max: 360, min: 180 } } }
         }
       });
 
@@ -578,7 +581,10 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
       this.jitsiApi.addListener('videoConferenceJoined', (event: any) => {
         this.joined = true;
         this.showReload = false;
+        this.autoReconnects = 0;
         clearTimeout(this.joinTimeoutHandle);
+        this.wakeLock.start();
+        this.jitsiApi?.isAudioMuted?.().then((m: boolean) => this.micMuted = !!m).catch(() => {});
         this.log('videoConferenceJoined : ' + (event?.displayName || '') + ' (id=' + event?.id + ')');
         this.joinAttendance();
         this.startRollCallTimers();
@@ -620,6 +626,26 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         this.screenSharing = !!event?.on;
         // Le professeur partage son écran : l'enregistrement du cours se lance automatiquement
         if (event?.on && this.isTeacher && !this.recording && !this.uploading) this.autoRecord();
+      });
+
+      this.jitsiApi.addListener('audioMuteStatusChanged', (e: any) => { this.micMuted = !!e?.muted; });
+      this.jitsiApi.addListener('micError', (e: any) => {
+        this.log('micError : ' + (e?.type || '') + ' ' + (e?.message || ''));
+        if (this.micErrorShown) return;
+        this.micErrorShown = true;
+        explainMicError(this.dialogs, e?.type || '');
+      });
+      // Coupure grave de la visio (réseau, serveur) : relance automatique (l'enregistrement continue à part)
+      this.jitsiApi.addListener('errorOccurred', (e: any) => {
+        this.log('errorOccurred : ' + (e?.error?.name || '') + (e?.error?.isFatal ? ' (fatale)' : ''));
+        if (!e?.error?.isFatal) return;
+        this.joined = false;
+        if (this.autoReconnects < 3 && navigator.onLine) {
+          this.autoReconnects++;
+          setTimeout(() => this.reloadConference(), 2000);
+        } else {
+          this.showReload = true;
+        }
       });
 
       this.jitsiApi.addListener('readyToClose', () => {

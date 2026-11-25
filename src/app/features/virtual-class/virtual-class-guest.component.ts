@@ -6,10 +6,13 @@ import { HttpClient, HttpContext, HttpParams } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { SILENT_ERRORS } from '../../core/interceptors/error.interceptor';
 import { DialogService } from '../../core/services/dialog.service';
-import { checkMicrophone } from './microphone-check';
+import { checkMicrophone, explainMicError, loadJitsiScript, RESILIENT_JITSI_CONFIG, ScreenWakeLock } from './microphone-check';
 import { AuthService } from '../../core/services/auth.service';
 
 declare const JitsiMeetExternalAPI: any;
+
+/** Reconnexions automatiques tentées après une coupure, avant de laisser le bouton à l'étudiant. */
+const MAX_AUTO_RECONNECT = 3;
 
 interface InviteInfo {
   title: string; description: string | null; scheduledAt: string | null; durationMinutes: number | null;
@@ -58,6 +61,7 @@ const NAME_KEY = 'itecom-guest-name';
             <li *ngIf="info.teacherName"><i class="bi bi-person me-2 text-primary"></i>{{ info.teacherName }}</li>
           </ul>
 
+          <div *ngIf="error && !info.canJoin" class="alert alert-danger py-2 small">{{ error }}</div>
           <div *ngIf="!info.canJoin" class="alert mb-0 d-flex gap-2" [ngClass]="waiting ? 'alert-info' : 'alert-secondary'" role="status">
             <i class="bi" [ngClass]="waiting ? 'bi-hourglass-split' : 'bi-info-circle'"></i>
             <div>
@@ -96,8 +100,23 @@ const NAME_KEY = 'itecom-guest-name';
             <span class="small text-muted"><i class="bi bi-person-circle me-1"></i>{{ displayName }}</span>
             <button class="btn btn-sm btn-outline-secondary" (click)="leave()"><i class="bi bi-box-arrow-right me-1"></i>Quitter</button>
           </div>
-          <div *ngIf="!joinedConference" class="alert alert-info small py-2">
-            Si une fenêtre « Rejoindre la réunion » s'affiche dans la vidéo, cliquez dessus pour entrer.
+          <div *ngIf="offline" class="alert alert-danger small py-2 d-flex gap-2" role="alert">
+            <i class="bi bi-wifi-off"></i>
+            <span>Connexion internet perdue. Restez sur cette page : vous serez reconnecté(e) automatiquement dès le retour du réseau.</span>
+          </div>
+          <div *ngIf="!offline && reconnecting" class="alert alert-warning small py-2 d-flex gap-2" role="status">
+            <span class="spinner-border spinner-border-sm"></span><span>Reconnexion à la séance…</span>
+          </div>
+          <div *ngIf="!joinedConference && !offline && !reconnecting" class="alert alert-info small py-2 d-flex flex-wrap align-items-center gap-2">
+            <span class="flex-grow-1">Si une fenêtre « Rejoindre la réunion » s'affiche dans la vidéo, cliquez dessus pour entrer.</span>
+            <button *ngIf="showReload" class="btn btn-sm btn-outline-primary" (click)="reconnect()">
+              <i class="bi bi-arrow-clockwise me-1"></i>Ça ne charge pas ? Recharger la visio
+            </button>
+          </div>
+          <div *ngIf="error && !joinedConference && !reconnecting" class="alert alert-danger small py-2">{{ error }}</div>
+          <div *ngIf="joinedConference && micMuted" class="alert alert-secondary small py-2 d-flex gap-2" role="status">
+            <i class="bi bi-mic-mute-fill text-danger"></i>
+            <span>Votre micro est coupé. Pour parler, touchez le bouton <strong>micro</strong> en bas de la vidéo.</span>
           </div>
           <details class="small text-muted mb-2 mic-help">
             <summary><i class="bi bi-mic me-1"></i>On ne vous entend pas ?</summary>
@@ -142,7 +161,15 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
   error = '';
   inRoom = false;
   joinedConference = false;
+  showReload = false;
+  offline = !navigator.onLine;
+  reconnecting = false;
+  micMuted = false;
   private micChecked = false;
+  private autoReconnects = 0;
+  private micErrorShown = false;
+  private joinTimeout: ReturnType<typeof setTimeout> | null = null;
+  private readonly wakeLock = new ScreenWakeLock();
   left = false;
   displayName = '';
 
@@ -172,10 +199,18 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
   @HostListener('window:beforeunload')
   beforeUnload() { this.sendLeave(true); }
 
+  @HostListener('window:offline')
+  onOffline() { this.offline = true; }
+
+  /** Réseau revenu : si la visio n'a pas tenu le coup, on y retourne sans que l'étudiant ait à cliquer. */
+  @HostListener('window:online')
+  onOnline() {
+    this.offline = false;
+    if (this.inRoom && !this.joinedConference) this.reconnect();
+  }
+
   ngOnDestroy() {
-    this.stopTimers();
-    this.sendLeave();
-    try { this.jitsiApi?.dispose(); } catch { /* déjà fermé */ }
+    this.teardown();
   }
 
   private get base(): string { return `/api/public/virtual-classes/invite/${encodeURIComponent(this.token)}`; }
@@ -226,6 +261,7 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
       this.inRoom = true;
       this.left = false;
       this.joining = false;
+      this.wakeLock.start();
       setTimeout(() => this.startConference(res), 0);
       this.heartbeat = setInterval(() => {
         if (!this.attendanceId) return;
@@ -239,12 +275,25 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
       this.rollCallPoll = setInterval(() => this.checkRollCall(), 15_000);
     } catch (e: any) {
       this.joining = false;
-      this.error = e?.error?.message || 'Impossible de rejoindre la séance. Vérifiez votre connexion puis réessayez.';
+      this.reconnecting = false;
+      this.error = e?.error?.message || (e?.status === 0 || !navigator.onLine
+        ? 'Pas de connexion internet. Vérifiez votre réseau (données mobiles ou Wi-Fi) puis réessayez.'
+        : 'Impossible de rejoindre la séance. Vérifiez votre connexion puis réessayez.');
       if (e?.status === 409) this.refreshInfo();
+      // Échec pendant une reconnexion : on reste sur la salle avec le bouton pour réessayer
+      if (this.inRoom) this.showReload = true;
     }
   }
 
-  rejoin() { this.join(); }
+  rejoin() { this.autoReconnects = 0; this.join(); }
+
+  /** Visio bloquée ou coupée : on quitte proprement et on rentre avec un jeton neuf. */
+  reconnect() {
+    if (this.joining) return;
+    this.teardown();
+    this.reconnecting = true;
+    this.join();
+  }
 
   private replaced(message?: string) {
     this.attendanceId = null;
@@ -256,19 +305,28 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
   }
 
   leave() {
+    this.teardown();
+    this.inRoom = false;
+    this.left = true;
+  }
+
+  /** Ferme la visio et la présence (sans changer d'écran). */
+  private teardown() {
     this.sendLeave();
     this.stopTimers();
+    this.wakeLock.stop();
+    if (this.joinTimeout) { clearTimeout(this.joinTimeout); this.joinTimeout = null; }
     try { this.jitsiApi?.dispose(); } catch { /* déjà fermé */ }
     this.jitsiApi = null;
-    this.inRoom = false;
     this.joinedConference = false;
-    this.left = true;
+    this.showReload = false;
+    this.micMuted = false;
   }
 
   private async startConference(res: JoinResponse) {
     try {
-      await this.loadJitsiScript(res.domain);
-      if (!this.jitsiContainer) return;
+      await loadJitsiScript(res.domain);
+      if (!this.jitsiContainer || !this.inRoom) return;
       this.jitsiApi = new JitsiMeetExternalAPI(res.domain, {
         roomName: res.roomName,
         jwt: res.token,
@@ -277,37 +335,48 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
         height: '100%',
         userInfo: { displayName: res.displayName },
         configOverwrite: {
-          prejoinPageEnabled: false,
+          ...RESILIENT_JITSI_CONFIG,
           // Caméra des participants en 360p : sur une petite connexion, la vidéo HD étouffait le son.
           // Le partage d'écran reste net (réglé à part).
           resolution: 360,
-          constraints: { video: { height: { ideal: 360, max: 360, min: 180 } } },
-          desktopSharingFrameRate: { min: 5, max: 15 },
-          prejoinConfig: { enabled: false },
-          requireDisplayName: false,
-          lobby: { enabled: false },
-          hideLobbyButton: true,
-          disableDeepLinking: true
+          constraints: { video: { height: { ideal: 360, max: 360, min: 180 } } }
         }
       });
-      this.jitsiApi.addListener('videoConferenceJoined', () => { this.joinedConference = true; });
+      // Visio toujours pas ouverte après 15 s (connexion lente, fenêtre bloquée) : bouton pour recharger
+      this.joinTimeout = setTimeout(() => { if (!this.joinedConference) this.showReload = true; }, 15_000);
+      this.jitsiApi.addListener('videoConferenceJoined', () => {
+        this.joinedConference = true;
+        this.reconnecting = false;
+        this.showReload = false;
+        this.autoReconnects = 0;
+        this.jitsiApi?.isAudioMuted?.().then((m: boolean) => this.micMuted = !!m).catch(() => {});
+      });
+      this.jitsiApi.addListener('audioMuteStatusChanged', (e: any) => { this.micMuted = !!e?.muted; });
+      this.jitsiApi.addListener('micError', (e: any) => {
+        if (this.micErrorShown) return;
+        this.micErrorShown = true;
+        explainMicError(this.dialogs, e?.type || '');
+      });
+      // Coupure grave de la visio (réseau, serveur) : reconnexion automatique, puis bouton
+      this.jitsiApi.addListener('errorOccurred', (e: any) => {
+        if (!e?.error?.isFatal || !this.inRoom) return;
+        if (this.autoReconnects < MAX_AUTO_RECONNECT && navigator.onLine) {
+          this.autoReconnects++;
+          setTimeout(() => this.reconnect(), 2000);
+        } else {
+          this.joinedConference = false;
+          this.showReload = true;
+        }
+      });
       this.jitsiApi.addListener('readyToClose', () => this.leave());
     } catch {
-      this.error = 'Impossible de charger la visioconférence. Rechargez la page.';
+      // Visio introuvable même après plusieurs essais : on libère la présence et on laisse réessayer
+      this.teardown();
       this.inRoom = false;
+      this.reconnecting = false;
+      this.error = 'La visioconférence n\'a pas pu se charger (connexion trop faible ou coupée). '
+        + 'Vérifiez votre réseau puis cliquez sur « Rejoindre la classe ».';
     }
-  }
-
-  private loadJitsiScript(domain: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (typeof JitsiMeetExternalAPI !== 'undefined') { resolve(); return; }
-      const script = document.createElement('script');
-      script.src = `https://${domain}/external_api.js`;
-      script.async = true;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error('Jitsi indisponible'));
-      document.body.appendChild(script);
-    });
   }
 
   /** Appel du professeur : « Je suis présent ». */
