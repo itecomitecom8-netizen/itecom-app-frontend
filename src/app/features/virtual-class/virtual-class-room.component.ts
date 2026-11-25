@@ -184,6 +184,15 @@ interface JitsiTokenResponse {
           </button>
         </div>
 
+        <details *ngIf="!isTeacher" class="small text-muted mb-2">
+          <summary><i class="bi bi-mic me-1"></i>On ne vous entend pas ?</summary>
+          <ul class="mb-0 mt-1 ps-3">
+            <li>Gardez l'écran allumé et cette page ouverte : en veille ou dans une autre application, le téléphone coupe le micro.</li>
+            <li>Vérifiez le micro choisi : flèche <strong>^</strong> à côté du bouton micro, en bas de la vidéo.</li>
+            <li>Après un appel WhatsApp ou téléphonique, rechargez la page.</li>
+            <li>Connexion faible : coupez votre caméra, le son passera mieux.</li>
+          </ul>
+        </details>
         <div #jitsiContainer style="width:100%; height:75vh; border-radius:12px; overflow:hidden" class="shadow-sm"></div>
 
         <details class="mt-3">
@@ -538,9 +547,12 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         },
         configOverwrite: {
           prejoinPageEnabled: false,
-          // Image en HD (720p) quand la connexion le permet ; écran partagé net
-          resolution: 720,
-          constraints: { video: { height: { ideal: 720, max: 720, min: 240 } } },
+          // Professeur en HD (720p) ; étudiants en 360p pour que leur son passe même sur une petite connexion.
+          // Le partage d'écran reste net (réglé à part).
+          resolution: this.isTeacher ? 720 : 360,
+          constraints: { video: this.isTeacher
+            ? { height: { ideal: 720, max: 720, min: 240 } }
+            : { height: { ideal: 360, max: 360, min: 180 } } },
           desktopSharingFrameRate: { min: 5, max: 15 },
           prejoinConfig: { enabled: false },
           requireDisplayName: false,

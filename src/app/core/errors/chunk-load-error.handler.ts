@@ -11,7 +11,8 @@ const RELOAD_GUARD_MS = 10000;
 @Injectable()
 export class ChunkLoadErrorHandler extends ErrorHandler {
   override handleError(error: unknown): void {
-    if (this.isChunkLoadError(error) && this.canReload()) {
+    // Jamais pendant une classe virtuelle : recharger ferait sortir de la séance en direct
+    if (this.isChunkLoadError(error) && this.canReload() && !this.inVirtualClass()) {
       try {
         sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
       } catch {}
@@ -25,6 +26,11 @@ export class ChunkLoadErrorHandler extends ErrorHandler {
     const message = String((error as any)?.message ?? (error as any)?.rejection?.message ?? error ?? '');
     return /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|Loading chunk [\w-]+ failed/i
       .test(message);
+  }
+
+  private inVirtualClass(): boolean {
+    const path = window.location.pathname;
+    return /^\/classe\//.test(path) || /^\/virtual-class\/\d+\/room/.test(path);
   }
 
   /** Évite une boucle de rechargements si le fichier manque vraiment sur le serveur. */
