@@ -257,6 +257,10 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
         userInfo: { displayName: res.displayName },
         configOverwrite: {
           prejoinPageEnabled: false,
+          // Image en HD (720p) quand la connexion le permet ; écran partagé net
+          resolution: 720,
+          constraints: { video: { height: { ideal: 720, max: 720, min: 240 } } },
+          desktopSharingFrameRate: { min: 5, max: 15 },
           prejoinConfig: { enabled: false },
           requireDisplayName: false,
           lobby: { enabled: false },

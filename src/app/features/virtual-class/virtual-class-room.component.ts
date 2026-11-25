@@ -538,6 +538,10 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         },
         configOverwrite: {
           prejoinPageEnabled: false,
+          // Image en HD (720p) quand la connexion le permet ; écran partagé net
+          resolution: 720,
+          constraints: { video: { height: { ideal: 720, max: 720, min: 240 } } },
+          desktopSharingFrameRate: { min: 5, max: 15 },
           prejoinConfig: { enabled: false },
           requireDisplayName: false,
           lobby: { enabled: false },
@@ -638,8 +642,8 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     try {
       // 1. Capturer l'écran (+ audio système si l'utilisateur l'autorise)
       this.displayStream = await (navigator.mediaDevices as any).getDisplayMedia({
-        // Qualité adaptée à un cours (écran partagé, tableau) : fichiers légers, rapides à revoir
-        video: { width: 960, height: 540, frameRate: 12 },
+        // HD 720p, 15 images/s : texte de l'écran partagé net à la relecture
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 15, max: 15 } },
         audio: true
       });
 
@@ -668,6 +672,9 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         micSource.connect(dest);
       }
 
+      // Écran partagé (texte, diapositives) : le navigateur privilégie la netteté plutôt que la fluidité
+      display.getVideoTracks().forEach(t => { try { (t as any).contentHint = 'detail'; } catch { /* non supporté */ } });
+
       // 4. Stream final : vidéo écran + audio mixé
       const combined = new MediaStream([
         ...display.getVideoTracks(),
@@ -683,11 +690,11 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
       const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
         ? 'video/webm;codecs=vp9,opus'
         : 'video/webm';
-      // ~200 kbit/s au total (≈ 90 Mo par heure) ; le serveur en tire ensuite une version encore plus légère
+      // ~1 Mbit/s au total (≈ 450 Mo par heure) : image claire ; le serveur en tire aussi une version légère
       this.mediaRecorder = new MediaRecorder(combined, {
         mimeType,
-        videoBitsPerSecond: 170_000,
-        audioBitsPerSecond: 32_000
+        videoBitsPerSecond: 900_000,
+        audioBitsPerSecond: 64_000
       });
       this.mediaRecorder.ondataavailable = (e: BlobEvent) => {
         if (e.data.size === 0) return;
