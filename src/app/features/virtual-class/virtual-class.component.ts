@@ -223,7 +223,7 @@ interface InviteFailure { email: string; name: string; reason: string; }
                       class="btn btn-outline-primary w-100 mt-2" (click)="openEdit(vc)">
                 <i class="bi bi-pencil-square me-2"></i>Modifier le titre et la durée
               </button>
-              <button *ngIf="canSeeAttendance(vc) && vc.status !== 'COMPLETED' && vc.status !== 'CANCELLED'"
+              <button *ngIf="canSeeAttendance(vc) && vc.status !== 'CANCELLED'"
                       class="btn btn-outline-secondary w-100 mt-2" (click)="openInvites(vc)">
                 <i class="bi bi-link-45deg me-2"></i>Lien de la séance
                 <span *ngIf="vc.guestCount" class="badge bg-secondary ms-1">{{ vc.guestCount }}</span>
