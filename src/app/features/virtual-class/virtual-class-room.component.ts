@@ -76,7 +76,7 @@ interface JitsiTokenResponse {
           <div *ngFor="let n of joinNotifications"><i class="bi bi-person-check-fill me-2"></i><strong>{{ n }}</strong> a rejoint la session.</div>
         </div>
 
-        <!-- Rappel toutes les 15 minutes : faire l'appel -->
+        <!-- Rappel toutes les 20 minutes : faire l'appel -->
         <div *ngIf="isTeacher && reminderDue && !activeRollCall?.open" class="alert alert-warning d-flex flex-wrap align-items-center gap-2 shadow-sm roll-call-reminder" role="alert">
           <i class="bi bi-exclamation-triangle-fill fs-4"></i>
           <div class="flex-grow-1">
@@ -230,8 +230,8 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
   private attendanceHeartbeat: ReturnType<typeof setInterval> | null = null;
   private static readonly HEARTBEAT_MS = 30000;
 
-  // Appel : rappel au professeur toutes les 15 minutes, réponse « Je suis présent » des étudiants
-  readonly reminderMinutes = 15;
+  // Appel : rappel au professeur toutes les 20 minutes, réponse « Je suis présent » des étudiants
+  readonly reminderMinutes = 20;
   reminderDue = false;
   nextReminderAt = 0;
   activeRollCall: RollCall | null = null;
@@ -646,6 +646,21 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 15, max: 15 } },
         audio: true
       });
+
+      // Un seul enregistrement à la fois par séance (professeur, admin, DR, DG…) : on réserve avant de commencer
+      try {
+        await firstValueFrom(this.http.post(`/api/teacher/virtual-classes/${this.vc!.id}/recording/start`, {},
+          { context: new HttpContext().set(SILENT_ERRORS, true) }));
+      } catch (e: any) {
+        this.displayStream?.getTracks().forEach(t => t.stop());
+        this.displayStream = null;
+        await this.dialogs.alert({
+          title: e?.status === 409 ? 'Le cours est déjà enregistré' : "Enregistrement impossible",
+          message: e?.error?.message || "L'enregistrement n'a pas pu démarrer. Vérifiez votre connexion puis réessayez.",
+          icon: e?.status === 409 ? 'bi-record-circle' : 'bi-exclamation-triangle', tone: e?.status === 409 ? 'info' : 'danger'
+        });
+        return;
+      }
 
       // 2. Capturer le microphone de l'appareil connecté
       try {
