@@ -6,6 +6,7 @@ import { HttpClient, HttpContext, HttpParams } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { SILENT_ERRORS } from '../../core/interceptors/error.interceptor';
 import { DialogService } from '../../core/services/dialog.service';
+import { checkMicrophone } from './microphone-check';
 import { AuthService } from '../../core/services/auth.service';
 
 declare const JitsiMeetExternalAPI: any;
@@ -132,6 +133,7 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
   error = '';
   inRoom = false;
   joinedConference = false;
+  private micChecked = false;
   left = false;
   displayName = '';
 
@@ -201,6 +203,11 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
     if (!this.info || this.joining) return;
     this.joining = true;
     this.error = '';
+    // Micro vérifié avant d'entrer : explications claires s'il est bloqué (une seule fois par page)
+    if (!this.micChecked) {
+      this.micChecked = true;
+      await checkMicrophone(this.dialogs);
+    }
     if (this.info.shared) this.writeStorage(NAME_KEY, this.name.trim());
     try {
       const res = await firstValueFrom(this.http.post<JoinResponse>(`${this.base}/join`,

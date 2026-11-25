@@ -218,6 +218,11 @@ interface InviteFailure { email: string; name: string; reason: string; }
                       class="btn btn-outline-primary w-100 mt-2" (click)="reopenSession(vc)">
                 <i class="bi bi-arrow-counterclockwise me-2"></i>Rouvrir la séance (même lien)
               </button>
+              <!-- Séance à venir : titre et durée modifiables -->
+              <button *ngIf="canSeeAttendance(vc) && vc.status === 'SCHEDULED'"
+                      class="btn btn-outline-primary w-100 mt-2" (click)="openEdit(vc)">
+                <i class="bi bi-pencil-square me-2"></i>Modifier le titre et la durée
+              </button>
               <button *ngIf="canSeeAttendance(vc) && vc.status !== 'COMPLETED' && vc.status !== 'CANCELLED'"
                       class="btn btn-outline-secondary w-100 mt-2" (click)="openInvites(vc)">
                 <i class="bi bi-link-45deg me-2"></i>Lien de la séance
@@ -344,6 +349,40 @@ interface InviteFailure { email: string; name: string; reason: string; }
                 <span *ngIf="creating" class="spinner-border spinner-border-sm me-2"></span>
                 <i *ngIf="!creating" class="bi bi-check-circle me-2"></i>
                 {{ parallelClasses.length ? 'Créer les ' + (parallelClasses.length + 1) + ' classes' : 'Créer la session' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modifier une séance à venir -->
+      <div class="modal fade show d-block" *ngIf="editing" style="background:rgba(0,0,0,.5);overflow-y:auto" role="dialog" aria-modal="true">
+        <div class="modal-dialog modal-dialog-centered">
+          <div class="modal-content border-0 rounded-4">
+            <div class="modal-header border-0 p-4 pb-2">
+              <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square me-1"></i>Modifier la séance à venir</h5>
+              <button class="btn-close" (click)="editing = null" [disabled]="editSaving"></button>
+            </div>
+            <div class="modal-body p-4 pt-2">
+              <div class="mb-3">
+                <label class="form-label fw-semibold" for="vc-edit-title">Titre du cours</label>
+                <input id="vc-edit-title" type="text" class="form-control" [(ngModel)]="editTitle" maxlength="255">
+              </div>
+              <div class="mb-2">
+                <label class="form-label fw-semibold" for="vc-edit-duration">Durée (minutes)</label>
+                <input id="vc-edit-duration" type="number" class="form-control" [(ngModel)]="editDuration" min="5" max="600">
+                <div class="form-text">
+                  La séance se terminera automatiquement à la fin de cette durée
+                  <span *ngIf="editDuration > 0">(fin prévue à {{ editEndLabel }})</span>.
+                </div>
+              </div>
+              <div *ngIf="editError" class="alert alert-danger py-2 small mb-0">{{ editError }}</div>
+            </div>
+            <div class="modal-footer border-0 p-4 pt-0">
+              <button class="btn btn-outline-secondary" (click)="editing = null" [disabled]="editSaving">Annuler</button>
+              <button class="btn btn-primary-custom" (click)="saveEdit()" [disabled]="editSaving">
+                <span *ngIf="editSaving" class="spinner-border spinner-border-sm me-2"></span>
+                <i *ngIf="!editSaving" class="bi bi-check-circle me-2"></i>Enregistrer les modifications
               </button>
             </div>
           </div>
@@ -494,6 +533,58 @@ export class VirtualClassComponent implements OnInit {
   }
 
   removeParallel(i: number) { this.parallelClasses.splice(i, 1); }
+
+  // --- Modifier une séance à venir (titre, durée) ---
+  editing: VirtualClass | null = null;
+  editTitle = '';
+  editDuration = 60;
+  editError = '';
+  editSaving = false;
+
+  openEdit(vc: VirtualClass) {
+    this.editing = vc;
+    this.editTitle = vc.title;
+    this.editDuration = vc.durationMinutes;
+    this.editError = '';
+  }
+
+  get editEndLabel(): string {
+    if (!this.editing) return '';
+    const end = new Date(new Date(this.editing.scheduledAt).getTime() + this.editDuration * 60000);
+    return end.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+  }
+
+  async saveEdit() {
+    const vc = this.editing;
+    if (!vc || this.editSaving) return;
+    const title = this.editTitle.trim();
+    const duration = Math.round(Number(this.editDuration));
+    if (!title) { this.editError = 'Saisissez le titre du cours.'; return; }
+    if (!(duration >= 5 && duration <= 600)) { this.editError = 'La durée doit être comprise entre 5 et 600 minutes.'; return; }
+    if (title === vc.title && duration === vc.durationMinutes) { this.editing = null; return; }
+    const changes = [
+      title !== vc.title ? `Titre : « ${vc.title} » → « ${title} »` : '',
+      duration !== vc.durationMinutes ? `Durée : ${vc.durationMinutes} min → ${duration} min (fin à ${this.editEndLabel})` : ''
+    ].filter(Boolean).join('\n');
+    const ok = await this.dialogs.confirm({ title: 'Enregistrer les modifications ?', message: changes,
+      icon: 'bi-pencil-square', confirmText: 'Oui, enregistrer' });
+    if (!ok) return;
+    this.editSaving = true;
+    this.editError = '';
+    this.http.put<VirtualClass>(`/api/teacher/virtual-classes/${vc.id}`, { title, durationMinutes: duration }).subscribe({
+      next: updated => {
+        this.editSaving = false;
+        vc.title = updated.title;
+        vc.durationMinutes = updated.durationMinutes;
+        this.editing = null;
+        this.dialogs.success('Séance modifiée', changes + '\n\nLe lien de la séance ne change pas.');
+      },
+      error: e => {
+        this.editSaving = false;
+        this.editError = e.error?.message || "Les modifications n'ont pas pu être enregistrées.";
+      }
+    });
+  }
   teachers: { id: number; firstName: string; lastName: string; email: string }[] = [];
   teachersLoaded = false;
   createError = '';

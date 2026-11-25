@@ -6,6 +6,7 @@ import { SILENT_ERRORS } from '../../core/interceptors/error.interceptor';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/services/auth.service';
 import { DialogService } from '../../core/services/dialog.service';
+import { checkMicrophone } from './microphone-check';
 
 declare const JitsiMeetExternalAPI: any;
 
@@ -129,6 +130,11 @@ interface JitsiTokenResponse {
             <span *ngIf="recording" class="badge bg-danger">
               <i class="bi bi-record-circle-fill me-1"></i>Enregistrement en cours...
             </span>
+            <button class="btn btn-sm btn-outline-secondary" *ngIf="hasSomethingRecorded && !uploading && !ending"
+                    (click)="discardRecording()" [disabled]="discarding">
+              <span *ngIf="discarding" class="spinner-border spinner-border-sm me-1"></span>
+              <i *ngIf="!discarding" class="bi bi-trash3 me-1"></i>Supprimer l'enregistrement
+            </button>
             <span *ngIf="recording && lastSavedAt" class="text-success small" title="Le cours est envoyé à la plateforme pendant l'enregistrement">
               <i class="bi bi-cloud-check me-1"></i>Sauvegardé automatiquement à {{ lastSavedAt | date:'HH:mm:ss' }}
             </span>
@@ -503,8 +509,15 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     });
   }
 
+  private micChecked = false;
+
   private async initJitsi() {
     if (!this.vc) return;
+    // Micro vérifié avant d'entrer : explications claires s'il est bloqué (une seule fois par page)
+    if (!this.micChecked) {
+      this.micChecked = true;
+      await checkMicrophone(this.dialogs);
+    }
     try {
       this.log('Demande du jeton sécurisé Jitsi...');
       const jitsi = await firstValueFrom(
@@ -583,6 +596,12 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
       this.jitsiApi.addListener('participantLeft', (event: any) => {
         this.log('participantLeft : ' + event?.id);
         this.connectedParticipants = this.connectedParticipants.filter(p => p.id !== event?.id);
+      });
+
+      // Le professeur partage son écran : on lui propose d'enregistrer le cours
+      this.jitsiApi.addListener('screenSharingStatusChanged', (event: any) => {
+        this.log('screenSharingStatusChanged : ' + event?.on);
+        if (event?.on && this.isTeacher && !this.recording && !this.uploading) this.offerRecording();
       });
 
       this.jitsiApi.addListener('readyToClose', () => {
@@ -693,6 +712,67 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
 
   /** Appelé une fois l'enregistrement arrêté ET sauvegardé (true) ou non (false). */
   private stopCallback: ((saved: boolean) => void) | null = null;
+
+  /** Partage d'écran démarré dans la visio : proposer d'enregistrer le cours (une fois par partage). */
+  private offeringRecording = false;
+  private async offerRecording() {
+    if (this.offeringRecording) return;
+    this.offeringRecording = true;
+    const ok = await this.dialogs.confirm({
+      title: 'Enregistrer le cours ?',
+      message: "Vous partagez votre écran. Voulez-vous lancer l'enregistrement du cours maintenant ?\n\n"
+        + "Le navigateur va vous demander quoi enregistrer : choisissez le même écran (ou la même fenêtre) "
+        + "et cochez « Partager l'audio » s'il est proposé.",
+      icon: 'bi-record-circle', tone: 'danger', confirmText: "Oui, lancer l'enregistrement", cancelText: 'Non, pas maintenant'
+    });
+    this.offeringRecording = false;
+    if (ok && !this.recording) this.startRecording();
+  }
+
+  /** Quelque chose a été enregistré dans cette séance (en cours, sauvegardé, ou déjà sur le serveur). */
+  get hasSomethingRecorded(): boolean {
+    return this.recording || !!this.lastSavedAt || this.uploadSuccess || !!this.vc?.recordingUrl;
+  }
+
+  discarding = false;
+
+  /** Supprime ce qui a été enregistré, sans quitter la salle ni arrêter le cours. */
+  async discardRecording() {
+    if (!this.vc || this.discarding) return;
+    const ok = await this.dialogs.confirm({
+      title: "Supprimer l'enregistrement ?",
+      message: "Tout ce qui a été enregistré dans cette séance sera supprimé définitivement.\n\n"
+        + "Le cours continue en direct pour tout le monde. Vous pourrez ensuite démarrer un nouvel enregistrement.",
+      icon: 'bi-trash3', tone: 'danger', confirmText: "Oui, supprimer l'enregistrement", cancelText: 'Non, garder'
+    });
+    if (!ok) return;
+    this.discarding = true;
+    // Arrêt sans sauvegarde : plus aucun morceau n'est envoyé
+    if (this.mediaRecorder) {
+      this.mediaRecorder.ondataavailable = null;
+      this.mediaRecorder.onstop = null;
+      if (this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
+    }
+    this.displayStream?.getTracks().forEach(t => t.stop());
+    this.micStream?.getTracks().forEach(t => t.stop());
+    this.micStream = null;
+    this.recordingAudioCtx?.close();
+    this.recordingAudioCtx = null;
+    this.recording = false;
+    this.chunkQueue = [];
+    await this.waitForChunks(30000);   // le morceau en cours d'envoi finit avant la suppression
+    try {
+      await firstValueFrom(this.http.delete(`/api/teacher/virtual-classes/${this.vc.id}/recording`));
+      this.recordedChunks = [];
+      this.lastSavedAt = null;
+      this.uploadSuccess = false;
+      this.uploadError = '';
+      this.vc.recordingUrl = null;
+      this.dialogs.success('Enregistrement supprimé',
+        "L'enregistrement a été supprimé. Le cours continue en direct : vous pouvez démarrer un nouvel enregistrement quand vous voulez.");
+    } catch { /* la raison est affichée en popup par l'intercepteur d'erreurs */ }
+    this.discarding = false;
+  }
 
   /** Bouton « Arrêter l'enregistrement » : confirmation, puis message indiquant où trouver le cours. */
   async confirmStopRecording() {
