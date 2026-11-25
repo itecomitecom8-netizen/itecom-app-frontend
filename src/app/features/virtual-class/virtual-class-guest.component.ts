@@ -230,7 +230,10 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
       this.heartbeat = setInterval(() => {
         if (!this.attendanceId) return;
         this.http.post(`${this.base}/attendance/${this.attendanceId}/heartbeat`, {},
-          { ...this.silent, params: this.sessionParams }).subscribe({ error: () => {} });
+          { ...this.silent, params: this.sessionParams }).subscribe({
+          // Entrée depuis un autre appareil ou onglet : une seule connexion par personne, celle-ci quitte la salle
+          error: e => { if (e?.status === 409) this.replaced(e.error?.message); }
+        });
       }, 30_000);
       this.checkRollCall();
       this.rollCallPoll = setInterval(() => this.checkRollCall(), 15_000);
@@ -242,6 +245,15 @@ export class VirtualClassGuestComponent implements OnInit, OnDestroy {
   }
 
   rejoin() { this.join(); }
+
+  private replaced(message?: string) {
+    this.attendanceId = null;
+    this.leave();
+    this.dialogs.alert({
+      title: 'Connexion sur un autre appareil', icon: 'bi-phone', tone: 'warning', confirmText: "J'ai compris",
+      message: message || 'Vous êtes entré(e) dans la séance depuis un autre appareil : une seule connexion par personne.'
+    });
+  }
 
   leave() {
     this.sendLeave();

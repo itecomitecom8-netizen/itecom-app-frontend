@@ -617,7 +617,9 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
       // Le professeur partage son écran : on lui propose d'enregistrer le cours
       this.jitsiApi.addListener('screenSharingStatusChanged', (event: any) => {
         this.log('screenSharingStatusChanged : ' + event?.on);
-        if (event?.on && this.isTeacher && !this.recording && !this.uploading) this.offerRecording();
+        this.screenSharing = !!event?.on;
+        // Le professeur partage son écran : l'enregistrement du cours se lance automatiquement
+        if (event?.on && this.isTeacher && !this.recording && !this.uploading) this.autoRecord();
       });
 
       this.jitsiApi.addListener('readyToClose', () => {
@@ -648,7 +650,11 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     }, 5000);
   }
 
-  async startRecording() {
+  /**
+   * @param auto lancé seul au partage d'écran : un échec (le navigateur exige un clic) reste silencieux
+   * @return true si l'enregistrement a démarré
+   */
+  async startRecording(auto = false): Promise<boolean> {
     this.uploadError = '';
     this.uploadSuccess = false;
     try {
@@ -666,12 +672,13 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
       } catch (e: any) {
         this.displayStream?.getTracks().forEach(t => t.stop());
         this.displayStream = null;
+        if (e?.status === 409) this.recordingConflict = true;
         await this.dialogs.alert({
           title: e?.status === 409 ? 'Le cours est déjà enregistré' : "Enregistrement impossible",
           message: e?.error?.message || "L'enregistrement n'a pas pu démarrer. Vérifiez votre connexion puis réessayez.",
           icon: e?.status === 409 ? 'bi-record-circle' : 'bi-exclamation-triangle', tone: e?.status === 409 ? 'info' : 'danger'
         });
-        return;
+        return false;
       }
 
       // 2. Capturer le microphone de l'appareil connecté
@@ -739,28 +746,51 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
       // Un morceau toutes les 20 s : le cours est sauvegardé au fur et à mesure
       this.mediaRecorder.start(VirtualClassRoomComponent.CHUNK_MS);
       this.recording = true;
+      return true;
     } catch (e) {
-      this.uploadError = "Impossible de démarrer l'enregistrement (autorisation refusée).";
+      if (!auto) this.uploadError = "Impossible de démarrer l'enregistrement (autorisation refusée).";
+      return false;
     }
   }
 
   /** Appelé une fois l'enregistrement arrêté ET sauvegardé (true) ou non (false). */
   private stopCallback: ((saved: boolean) => void) | null = null;
 
-  /** Partage d'écran démarré dans la visio : proposer d'enregistrer le cours (une fois par partage). */
+  /** Écran du professeur partagé dans la visio (événement Jitsi). */
+  private screenSharing = false;
+  /** Le cours est déjà enregistré par quelqu'un d'autre (professeur sur un autre appareil, admin…). */
+  private recordingConflict = false;
   private offeringRecording = false;
-  private async offerRecording() {
-    if (this.offeringRecording) return;
+
+  /**
+   * Partage d'écran démarré : l'enregistrement du cours entier se lance automatiquement et continue
+   * jusqu'à la fin de la séance. Le navigateur exige que le professeur choisisse lui-même l'écran à filmer :
+   * on tente d'abord sans rien demander, puis, si le navigateur veut un clic, une fenêtre obligatoire
+   * (sans « Non ») le lui demande, jusqu'à 3 fois.
+   */
+  private async autoRecord() {
+    if (this.offeringRecording || this.recording || this.uploading) return;
     this.offeringRecording = true;
-    const ok = await this.dialogs.confirm({
-      title: 'Enregistrer le cours ?',
-      message: "Vous partagez votre écran. Voulez-vous lancer l'enregistrement du cours maintenant ?\n\n"
-        + "Le navigateur va vous demander quoi enregistrer : choisissez le même écran (ou la même fenêtre) "
-        + "et cochez « Partager l'audio » s'il est proposé.",
-      icon: 'bi-record-circle', tone: 'danger', confirmText: "Oui, lancer l'enregistrement", cancelText: 'Non, pas maintenant'
-    });
-    this.offeringRecording = false;
-    if (ok && !this.recording) this.startRecording();
+    this.recordingConflict = false;
+    try {
+      if (await this.startRecording(true)) return;
+      for (let attempt = 0; attempt < 3 && this.screenSharing && !this.recording && !this.recordingConflict; attempt++) {
+        await this.dialogs.alert({
+          title: 'Enregistrement du cours',
+          message: "Vous partagez votre écran : le cours doit être enregistré.\n\n"
+            + "Cliquez ci-dessous, puis choisissez le même écran (ou la même fenêtre) "
+            + "et cochez « Partager l'audio » s'il est proposé.",
+          icon: 'bi-record-circle', tone: 'danger', confirmText: "Lancer l'enregistrement"
+        });
+        if (!this.screenSharing || this.recording) break;
+        if (await this.startRecording(true)) break;
+      }
+      if (!this.recording && !this.recordingConflict && this.screenSharing) {
+        this.uploadError = "Le cours n'est pas enregistré : cliquez sur « Enregistrer » pour le lancer.";
+      }
+    } finally {
+      this.offeringRecording = false;
+    }
   }
 
   /** Quelque chose a été enregistré dans cette séance (en cours, sauvegardé, ou déjà sur le serveur). */
