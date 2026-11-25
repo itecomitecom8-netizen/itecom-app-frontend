@@ -429,6 +429,18 @@ interface InviteFailure { email: string; name: string; reason: string; }
                     <i class="bi bi-link me-1"></i>{{ invites.sharedLink ? 'Réactiver le lien' : 'Créer le lien' }}</button>
                 </ng-template>
 
+                <!-- Admin : redonner à la séance un ancien lien déjà envoyé (séance supprimée, lien remplacé) -->
+                <details *ngIf="authService.isAdmin" class="mb-4 small">
+                  <summary class="text-primary"><i class="bi bi-arrow-counterclockwise me-1"></i>Remettre un ancien lien</summary>
+                  <p class="text-muted mt-2 mb-2">Collez un lien déjà envoyé (WhatsApp, email…) : la séance le reprend et il fonctionne de nouveau.
+                    Il remplace le lien actuel.</p>
+                  <form class="input-group input-group-sm" (ngSubmit)="restoreLink()">
+                    <input class="form-control" name="oldLink" [(ngModel)]="oldLink" aria-label="Ancien lien"
+                           placeholder="https://…/classe/…">
+                    <button class="btn btn-outline-primary" type="submit" [disabled]="invitesBusy || !oldLink.trim()">Remettre</button>
+                  </form>
+                </details>
+
                 <!-- Invitations personnelles -->
                 <h6 class="fw-bold border-top pt-3"><i class="bi bi-envelope me-2 text-primary"></i>Invitations personnelles par email</h6>
                 <p class="small text-muted mb-2">Chaque personne reçoit son propre lien : on sait qui est entré, et ses présences et appels sont suivis à son nom.</p>
@@ -978,6 +990,13 @@ export class VirtualClassComponent implements OnInit {
       next: (st: any) => { this.invitesBusy = false; this.setInvites(st); done?.(); },
       error: e => { this.invitesBusy = false; this.invitesError = e.error?.message || 'Action impossible. Réessayez.'; }
     });
+  }
+
+  oldLink = '';
+
+  restoreLink() {
+    this.invitesCall(this.http.post(`/api/admin/virtual-classes/${this.invitesFor!.id}/invites/link/restore`, { link: this.oldLink }),
+      () => { this.oldLink = ''; this.dialogs.toast('Ancien lien remis en service.'); });
   }
 
   enableLink() {
