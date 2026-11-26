@@ -169,8 +169,21 @@ interface JitsiTokenResponse {
         <div *ngIf="uploadSuccess" class="alert alert-success">
           <i class="bi bi-check-circle me-2"></i>Cours enregistré dans la plateforme. Vous le retrouverez dans l'onglet « Passées » des Classes virtuelles une fois la séance terminée.
         </div>
+        <div *ngIf="uploading && !recording" class="alert alert-warning d-flex gap-2 align-items-center">
+          <span class="spinner-border spinner-border-sm"></span>
+          <span>Envoi de l'enregistrement<span *ngIf="chunksLeft"> : encore {{ chunksLeft }} morceau(x) de 20 s</span>.
+            <strong>Ne fermez pas cette page.</strong></span>
+        </div>
         <div *ngIf="uploadError" class="alert alert-danger">
           <i class="bi bi-exclamation-circle me-2"></i>{{ uploadError }}
+          <div *ngIf="unsentRecording" class="d-flex flex-wrap gap-2 mt-2">
+            <button class="btn btn-sm btn-danger" [disabled]="uploading" (click)="retryUpload()">
+              <i class="bi bi-arrow-repeat me-1"></i>Réessayer l'envoi
+            </button>
+            <button class="btn btn-sm btn-outline-danger" (click)="downloadRecording()">
+              <i class="bi bi-download me-1"></i>Télécharger une copie sur cet ordinateur
+            </button>
+          </div>
         </div>
 
         <div *ngIf="offline" class="alert alert-danger d-flex gap-2" role="alert">
@@ -330,7 +343,7 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     // Dernier morceau envoyé tout de suite : on perd au plus quelques secondes si la page se ferme
     if (this.recording && this.mediaRecorder?.state === 'recording') this.mediaRecorder.requestData();
     this.leaveAttendance(true);
-    if (this.recording || this.uploading) {
+    if (this.recording || this.uploading || this.unsentRecording) {
       event.preventDefault();
       event.returnValue = '';
     }
@@ -959,47 +972,98 @@ export class VirtualClassRoomComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** Fin de l'enregistrement : derniers morceaux, miniature ; la vidéo complète en secours si besoin. */
+  /** Vidéo de l'enregistrement pas encore arrivée sur la plateforme : gardée pour réessayer ou la télécharger. */
+  unsentRecording: Blob | null = null;
+  private unsentThumbnail = '';
+  /** Morceaux encore à envoyer (affiché pendant l'envoi de la fin). */
+  get chunksLeft(): number { return this.chunkQueue.length; }
+
+  /**
+   * Fin de l'enregistrement : derniers morceaux, miniature ; la vidéo complète en secours si besoin.
+   * Sur une connexion faible, on attend (jusqu'à 15 min) que tous les morceaux soient partis : tout ce qui
+   * est déjà envoyé est en sécurité sur le serveur. En cas d'échec, la vidéo reste dans la page : bouton
+   * « Réessayer l'envoi » et copie à télécharger.
+   */
   private async finishRecording() {
-    const done = (saved: boolean) => {
-      this.uploading = false;
-      this.uploadSuccess = saved;
-      const cb = this.stopCallback;
-      this.stopCallback = null;
-      cb?.(saved);
-    };
     if (!this.vc || this.recordedChunks.length === 0) {
-      done(false);
+      this.finishDone(false);
       return;
     }
     this.uploading = true;
     this.uploadError = '';
     const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
     const thumbnail = await this.extractThumbnailFromBlob(blob);
-    const allSent = !this.chunkFailed && await this.waitForChunks(60000);
+    await this.sendFinalRecording(blob, thumbnail);
+  }
+
+  private finishDone(saved: boolean) {
+    this.uploading = false;
+    this.uploadSuccess = saved;
+    const cb = this.stopCallback;
+    this.stopCallback = null;
+    cb?.(saved);
+  }
+
+  private async sendFinalRecording(blob: Blob, thumbnail: string) {
+    if (!this.vc) return;
+    const classId = this.vc.id;
+    const silent = { context: new HttpContext().set(SILENT_ERRORS, true) };
+    const allSent = !this.chunkFailed && await this.waitForChunks(15 * 60_000);
     try {
       if (allSent && !this.chunkFailed) {
-        await firstValueFrom(this.http.post(`/api/teacher/virtual-classes/${this.vc.id}/recording/finish`,
-          { thumbnail }, { context: new HttpContext().set(SILENT_ERRORS, true) }));
+        // Tout est déjà sur le serveur : la fin (miniature, version légère) peut échouer sans rien perdre
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            await firstValueFrom(this.http.post(`/api/teacher/virtual-classes/${classId}/recording/finish`, { thumbnail }, silent));
+            break;
+          } catch {
+            await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
+          }
+        }
       } else {
         // Secours : la vidéo complète, d'un seul envoi (jusqu'à 600 Mo)
-        if (blob.size > 600 * 1024 * 1024) {
-          this.uploadError = `Enregistrement trop volumineux (${Math.round(blob.size / (1024 * 1024))} Mo, maximum 600 Mo).`;
-          done(false);
-          return;
-        }
+        if (blob.size > 600 * 1024 * 1024) throw new Error('too-big');
         this.chunkQueue = [];
         const body = new FormData();
-        body.append('file', blob, `session-${this.vc.id}.webm`);
+        body.append('file', blob, `session-${classId}.webm`);
         if (thumbnail) body.append('thumbnail', thumbnail);
-        await firstValueFrom(this.http.post(`/api/teacher/virtual-classes/${this.vc.id}/recording`, body,
-          { context: new HttpContext().set(SILENT_ERRORS, true) }));
+        await firstValueFrom(this.http.post(`/api/teacher/virtual-classes/${classId}/recording`, body, silent));
       }
-      done(true);
+      this.unsentRecording = null;
+      this.finishDone(true);
     } catch {
-      this.uploadError = "Erreur lors de l'envoi de l'enregistrement vers la plateforme.";
-      done(false);
+      this.unsentRecording = blob;
+      this.unsentThumbnail = thumbnail;
+      this.uploadError = this.chunkQueue.length && !this.chunkFailed
+        ? `La fin de l'enregistrement n'est pas encore envoyée (${this.chunkQueue.length} morceau(x) de 20 s) : connexion trop faible. `
+          + "Ce qui a déjà été envoyé est sauvegardé sur la plateforme. Ne fermez pas cette page, cliquez sur « Réessayer l'envoi »."
+        : "L'enregistrement n'a pas pu être envoyé (connexion trop faible). Ne fermez pas cette page : "
+          + "cliquez sur « Réessayer l'envoi », ou téléchargez une copie sur cet ordinateur.";
+      this.finishDone(false);
     }
+  }
+
+  /** Réessaie d'envoyer l'enregistrement resté dans la page. */
+  async retryUpload() {
+    if (!this.unsentRecording || this.uploading) return;
+    this.uploading = true;
+    this.uploadError = '';
+    this.sendChunks();
+    await this.sendFinalRecording(this.unsentRecording, this.unsentThumbnail);
+    if (this.uploadSuccess) this.dialogs.toast("Enregistrement envoyé : il sera dans l'onglet « Passées ».", 'success', 6000);
+  }
+
+  /** Copie de secours de l'enregistrement sur l'ordinateur du professeur. */
+  downloadRecording() {
+    if (!this.unsentRecording) return;
+    const url = URL.createObjectURL(this.unsentRecording);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cours-${this.vc?.id ?? ''}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
   private extractThumbnailFromBlob(blob: Blob): Promise<string> {
