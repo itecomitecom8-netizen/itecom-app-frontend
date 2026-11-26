@@ -4,7 +4,7 @@ import { CommonModule } from '@angular/common';
 import { pickVideoUrl } from '../../core/utils/video-quality';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpEventType } from '@angular/common/http';
 import { Observable, firstValueFrom } from 'rxjs';
 import { DialogService } from '../../core/services/dialog.service';
 import { AuthService } from '../../core/services/auth.service';
@@ -202,6 +202,18 @@ interface InviteFailure { email: string; name: string; reason: string; }
                 <button *ngIf="authService.isStudent" class="btn btn-outline-secondary w-100" disabled>
                   <i class="bi bi-archive me-2"></i>Session non tenue
                 </button>
+              </div>
+              <!-- Vidéo du cours importée à la main (copie de secours après un envoi raté) -->
+              <div *ngIf="canImportRecording(vc)" class="mb-2">
+                <div *ngIf="importingId === vc.id" class="small">
+                  <div class="d-flex justify-content-between mb-1"><span>Envoi de la vidéo… ne fermez pas la page</span><span>{{ importProgress }} %</span></div>
+                  <div class="progress" style="height:8px"><div class="progress-bar progress-bar-striped progress-bar-animated" [style.width.%]="importProgress"></div></div>
+                </div>
+                <label *ngIf="importingId !== vc.id" class="btn btn-sm btn-outline-primary w-100 mb-0" [class.disabled]="importingId !== null">
+                  <i class="bi bi-upload me-2"></i>Importer la vidéo du cours
+                  <input type="file" accept="video/*,.webm,.mkv" hidden [disabled]="importingId !== null"
+                         (change)="$event.stopPropagation(); importRecording(vc, $event)">
+                </label>
               </div>
               <div *ngIf="vc.status === 'COMPLETED' && !vc.hasRecording && vc.recordingLost"
                    class="alert alert-warning small py-2 mb-0" role="status">
@@ -691,6 +703,69 @@ export class VirtualClassComponent implements OnInit {
     if (this.authService.isAdmin) return true;
     const currentUserId = this.authService.currentUser?.id;
     return !!(this.authService.isTeacher && currentUserId && vc.teacherId === currentUserId);
+  }
+
+  /** Professeur de la séance ou administrateur, séance commencée ou terminée. */
+  canImportRecording(vc: VirtualClass): boolean {
+    if (vc.status !== 'ONGOING' && vc.status !== 'COMPLETED') return false;
+    if (this.authService.isAdmin) return true;
+    const currentUserId = this.authService.currentUser?.id;
+    return !!(this.authService.isTeacher && currentUserId && vc.teacherId === currentUserId);
+  }
+
+  importingId: number | null = null;
+  importProgress = 0;
+
+  /** Envoie la vidéo choisie ; si la séance en a déjà une, propose de la placer avant (réunies) ou de la remplacer. */
+  async importRecording(vc: VirtualClass, event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    if (file.size > 600 * 1024 * 1024) {
+      this.dialogs.toast(`Vidéo trop volumineuse (${Math.round(file.size / 1048576)} Mo, maximum 600 Mo).`, 'danger', 6000);
+      return;
+    }
+    let position = 'replace';
+    if (vc.hasRecording) {
+      const before = await this.dialogs.confirm({
+        title: 'Cette séance a déjà une vidéo',
+        message: 'Placer la vidéo importée AVANT la vidéo existante ? Les deux seront réunies en une seule vidéo, dans cet ordre.',
+        icon: 'bi-collection-play', tone: 'info', confirmText: 'Oui, placer avant', cancelText: 'Non'
+      });
+      if (before) position = 'before';
+      else {
+        const replace = await this.dialogs.confirm({
+          title: 'Remplacer la vidéo existante ?',
+          message: 'La vidéo existante sera supprimée et remplacée par celle-ci.',
+          icon: 'bi-arrow-repeat', tone: 'danger', confirmText: 'Remplacer', cancelText: 'Annuler'
+        });
+        if (!replace) return;
+      }
+    }
+    const body = new FormData();
+    body.append('file', file, file.name);
+    this.importingId = vc.id;
+    this.importProgress = 0;
+    this.http.post<VirtualClass>(`/api/teacher/virtual-classes/${vc.id}/recording/import`, body,
+      { params: { position }, reportProgress: true, observe: 'events' }).subscribe({
+      next: ev => {
+        if (ev.type === HttpEventType.UploadProgress && ev.total) {
+          this.importProgress = Math.round(100 * ev.loaded / ev.total);
+        } else if (ev.type === HttpEventType.Response && ev.body) {
+          const idx = this.classes.findIndex(c => c.id === vc.id);
+          if (idx !== -1) this.classes[idx] = { ...this.classes[idx], ...ev.body };
+          this.importingId = null;
+          this.dialogs.toast(position === 'before'
+            ? 'Vidéo importée : elle sera réunie avec la vidéo existante d\'ici quelques minutes.'
+            : 'Vidéo du cours importée.', 'success', 6000);
+        }
+      },
+      error: err => {
+        this.importingId = null;
+        this.dialogs.toast(err?.error?.message || 'Envoi impossible : vérifiez votre connexion puis réessayez.', 'danger', 6000);
+      }
+    });
   }
 
   canDelete(vc: VirtualClass): boolean {
